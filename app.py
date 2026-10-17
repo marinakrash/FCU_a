@@ -815,34 +815,26 @@ elif module == "3. Monthly Decline Report (Waterfall)":
     
     st.markdown("---")
     
-    # --- FILE UPLOADERS ---
-    st.subheader("📂 Upload Required Input Files")
-    col_f1, col_f2, col_f3 = st.columns(3)
+    # --- STEP A: INITIAL UPLOAD (SEON & BLACKLIST) ---
+    st.subheader("1️⃣ Step 1: Upload SEON Data for Classification")
+    col_f1, col_f2 = st.columns(2)
     with col_f1:
         f1 = st.file_uploader("1. SEON Transactions (Excel/CSV):", type=["xlsx", "csv"], key="m3_f1")
     with col_f2:
         f2 = st.file_uploader("2. SEON Blacklist (CSV/Excel):", type=["csv", "xlsx"], key="m3_f2")
-    with col_f3:
-        f3 = st.file_uploader("3. Metabase Export (Excel/CSV):", type=["xlsx", "csv"], key="m3_f3")
 
     if f1 is not None and f2 is not None:
-        if st.button("🚀 Run Complete Monthly Analysis", type="primary"):
-            with st.spinner("Processing SEON Waterfall, Blacklist, and Metabase FX Rates..."):
-                # --- LOAD DATA ---
+        if st.button("🚀 Run Waterfall & Generate User IDs", type="primary"):
+            with st.spinner("Processing SEON Waterfall and Blacklist..."):
                 tx_df = load_data(f1)
                 bl_df = load_data(f2, sep=";")
                 
                 tx_df.columns = tx_df.columns.astype(str).str.strip()
                 bl_df.columns = bl_df.columns.astype(str).str.strip()
                 
-                # ============================================================
-                # STEP 1: SEON TRANSACTIONS WATERFALL
-                # ============================================================
-                st.subheader("1️⃣ SEON Transactions Waterfall")
-                
+                # --- WATERFALL CALCULATION ---
                 tx_work = tx_df.copy()
                 
-                # Filter Action Type and Payment Provider
                 if 'action_type' in tx_work.columns:
                     tx_work['action_type'] = tx_work['action_type'].fillna("").astype(str).str.strip().str.lower()
                     tx_work = tx_work[tx_work['action_type'] == 'purchase']
@@ -851,7 +843,6 @@ elif module == "3. Monthly Decline Report (Waterfall)":
                     tx_work['payment_provider'] = pd.to_numeric(tx_work['payment_provider'], errors='coerce').fillna(0)
                     tx_work = tx_work[tx_work['payment_provider'] != 521268264]
                 
-                # Filter Selected Month & Year
                 if 'date' in tx_work.columns:
                     tx_work['date'] = pd.to_datetime(tx_work['date'], utc=True, errors='coerce')
                     tx_work = tx_work[tx_work['date'].notna()]
@@ -865,27 +856,23 @@ elif module == "3. Monthly Decline Report (Waterfall)":
                 else:
                     tx_work['transaction_amount_eur'] = 0.0
 
-                # Step 1: Filter Excluded Test Domains
                 if 'email/domain' in tx_work.columns:
                     step_1 = tx_work[~tx_work['email/domain'].fillna("").astype(str).str.strip().str.lower().isin(EXCLUDED_DOMAINS)].copy()
                 else:
                     step_1 = tx_work.copy()
                 
-                # Step 2: Filter Sanctioned / Restricted Countries
                 cond_countries = pd.Series(True, index=step_1.index)
                 for col_geo in ['bin_country_code', 'user_country', 'merchant_country', 'ip_country']:
                     if col_geo in step_1.columns:
                         cond_countries = cond_countries & (~step_1[col_geo].fillna("").astype(str).str.strip().str.upper().isin(RESTRICTED_COUNTRIES))
                 step_2 = step_1[cond_countries].copy()
                 
-                # Step 3 & 4: Deduplicate Consecutive Declines (15 mins window)
                 if 'email/raw_email' in step_2.columns:
                     step_3 = label_consecutive_declines(step_2, timeframe_hours=0.25)
                     step_4 = step_3[~step_3['consecutive_decline']].copy()
                 else:
                     step_4 = step_2.copy()
 
-                # Waterfall Calculations
                 def calc_count_rate(data_df):
                     tot = len(data_df)
                     dec = (data_df['state'] == 'DECLINE').sum() if 'state' in data_df.columns else 0
@@ -910,13 +897,12 @@ elif module == "3. Monthly Decline Report (Waterfall)":
                     {'Description': '4. True Reject Rate (Residual Declines)', 'Reject Rate (Count)': f'{true_c:.2f}%', 'Reject Rate (Amount)': f'{true_a:.2f}%'},
                 ])
 
+                st.subheader("📈 Transactions Waterfall Analysis Summary")
                 st.dataframe(summary_table, use_container_width=True)
 
-                # ============================================================
-                # STEP 2: BLACKLIST & CLOSED ACCOUNTS CLASSIFICATION
-                # ============================================================
+                # --- BLACKLIST EXTRACTION ---
                 st.markdown("---")
-                st.subheader("2️⃣ Closed Accounts & Multi-Accounts Classification")
+                st.subheader("🛡️ Closed Accounts & Multi-Accounts Classification")
                 
                 data_field_col = next((c for c in bl_df.columns if c.lower() == 'data field'), None)
                 val_col = next((c for c in bl_df.columns if c.lower() == 'value'), None)
@@ -926,21 +912,12 @@ elif module == "3. Monthly Decline Report (Waterfall)":
                 if data_field_col and val_col:
                     user_id_rows = bl_df[bl_df[data_field_col].fillna("").astype(str).str.strip().str.lower() == 'user_id'].copy()
 
-                    # Extract Multi-Accounts
-                    if comment_col:
-                        df_multi = user_id_rows[user_id_rows[comment_col].fillna("").astype(str).str.contains('duplicate|active|Multi-acc', case=False, na=False)]
-                    else:
-                        df_multi = pd.DataFrame()
+                    df_multi = user_id_rows[user_id_rows[comment_col].fillna("").astype(str).str.contains('duplicate|active|Multi-acc', case=False, na=False)] if comment_col else pd.DataFrame()
                     multi_ids = set(pd.to_numeric(df_multi[val_col], errors='coerce').dropna().astype(int)) if not df_multi.empty else set()
 
-                    # Extract Closed Accounts
-                    if updater_col:
-                        df_closed = user_id_rows[user_id_rows[updater_col].fillna("").astype(str).str.strip().str.lower().isin([m.lower() for m in CLOSED_ACCOUNTS_MANAGERS])]
-                    else:
-                        df_closed = user_id_rows.copy()
+                    df_closed = user_id_rows[user_id_rows[updater_col].fillna("").astype(str).str.strip().str.lower().isin([m.lower() for m in CLOSED_ACCOUNTS_MANAGERS])] if updater_col else user_id_rows.copy()
                     closed_ids = set(pd.to_numeric(df_closed[val_col], errors='coerce').dropna().astype(int)) if not df_closed.empty else set()
 
-                    # Subtract Multi-Accounts from Closed Accounts
                     clean_closed_ids = closed_ids.difference(multi_ids)
 
                     c1, c2, c3 = st.columns(3)
@@ -952,69 +929,72 @@ elif module == "3. Monthly Decline Report (Waterfall)":
                     st.subheader("📋 Clean Closed User IDs for Metabase Query:")
                     st.code(clean_str if clean_str else "No clean numeric User IDs found.", language="text")
 
-                # ============================================================
-                # STEP 3: METABASE TOP-UP VOLUME & CURRENCY CONVERSION
-                # ============================================================
-                total_topup_eur = 0.0
-                mb_summary_df = pd.DataFrame()
+                    # Save to Session State for Metabase step
+                    st.session_state['summary_table'] = summary_table
+                    st.session_state['clean_closed_ids'] = clean_closed_ids
+                    st.session_state['multi_ids'] = multi_ids
 
-                if f3 is not None:
-                    st.markdown("---")
-                    st.subheader("3️⃣ Metabase Top-Up Volume Analysis")
+    # --- STEP B: OPTIONAL METABASE UPLOAD ---
+    st.markdown("---")
+    st.subheader("2️⃣ Step 2: Upload Metabase Export (Optional)")
+    f3 = st.file_uploader("3. Metabase Export (Excel/CSV):", type=["xlsx", "csv"], key="m3_f3")
+
+    if f3 is not None:
+        if st.button("💶 Calculate Metabase Volumes & FX Rates", type="primary"):
+            with st.spinner("Calculating Top-Up Volume in EUR..."):
+                mb_df = load_data(f3)
+                mb_df.columns = mb_df.columns.astype(str).str.strip()
+
+                status_col = next((c for c in mb_df.columns if c.lower() == 'status'), None)
+                type_col = next((c for c in mb_df.columns if 'transaction_type' in c.lower() or 'type' in c.lower()), None)
+                curr_col = next((c for c in mb_df.columns if 'pay_currency' in c.lower() or 'currency' in c.lower()), None)
+                amt_col = next((c for c in mb_df.columns if 'pay_amount' in c.lower() or 'amount' in c.lower()), None)
+
+                if status_col and type_col and curr_col and amt_col:
+                    mb_df[amt_col] = pd.to_numeric(mb_df[amt_col], errors='coerce').fillna(0.0)
+                    mb_df[curr_col] = mb_df[curr_col].fillna("").astype(str).str.strip().str.upper()
+
+                    successful_topups = mb_df[
+                        (mb_df[status_col].fillna("").astype(str).str.strip().str.lower() == 'accepted') &
+                        (mb_df[type_col].fillna("").astype(str).str.strip().str.upper() == 'TYPE_TOP_UP')
+                    ].copy()
+
+                    rates_to_eur = fetch_eur_rates()
                     
-                    mb_df = load_data(f3)
-                    mb_df.columns = mb_df.columns.astype(str).str.strip()
+                    topup_summary = successful_topups.groupby(curr_col, as_index=False)[amt_col].sum()
+                    topup_summary.columns = ['pay_currency', 'pay_amount']
+                    topup_summary['rate_to_eur'] = topup_summary['pay_currency'].map(rates_to_eur).fillna(1.0)
+                    topup_summary['amount_eur'] = topup_summary['pay_amount'] * topup_summary['rate_to_eur']
 
-                    status_col = next((c for c in mb_df.columns if c.lower() == 'status'), None)
-                    type_col = next((c for c in mb_df.columns if 'transaction_type' in c.lower() or 'type' in c.lower()), None)
-                    curr_col = next((c for c in mb_df.columns if 'pay_currency' in c.lower() or 'currency' in c.lower()), None)
-                    amt_col = next((c for c in mb_df.columns if 'pay_amount' in c.lower() or 'amount' in c.lower()), None)
+                    total_topup_eur = topup_summary['amount_eur'].sum()
 
-                    if status_col and type_col and curr_col and amt_col:
-                        mb_df[amt_col] = pd.to_numeric(mb_df[amt_col], errors='coerce').fillna(0.0)
-                        mb_df[curr_col] = mb_df[curr_col].fillna("").astype(str).str.strip().str.upper()
+                    m_col1, m_col2 = st.columns(2)
+                    m_col1.metric("Successful Top-Up Transactions", f"{len(successful_topups):,}")
+                    m_col2.metric("Total Top-Up Volume (EUR Equivalent)", f"{total_topup_eur:,.2f} €")
 
-                        successful_topups = mb_df[
-                            (mb_df[status_col].fillna("").astype(str).str.strip().str.lower() == 'accepted') &
-                            (mb_df[type_col].fillna("").astype(str).str.strip().str.upper() == 'TYPE_TOP_UP')
-                        ].copy()
+                    st.write("#### Currency Breakdown & Applied ECB Rates:")
+                    st.dataframe(topup_summary, use_container_width=True)
 
-                        rates_to_eur = fetch_eur_rates()
-                        
-                        topup_summary = successful_topups.groupby(curr_col, as_index=False)[amt_col].sum()
-                        topup_summary.columns = ['pay_currency', 'pay_amount']
-                        topup_summary['rate_to_eur'] = topup_summary['pay_currency'].map(rates_to_eur).fillna(1.0)
-                        topup_summary['amount_eur'] = topup_summary['pay_amount'] * topup_summary['rate_to_eur']
+                    st.session_state['mb_summary_df'] = topup_summary
 
-                        total_topup_eur = topup_summary['amount_eur'].sum()
-                        mb_summary_df = topup_summary.copy()
+    # --- EXPORT BUTTON ---
+    if 'summary_table' in st.session_state:
+        st.markdown("---")
+        output_waterfall = io.BytesIO()
+        with pd.ExcelWriter(output_waterfall, engine="xlsxwriter") as writer:
+            st.session_state['summary_table'].to_excel(writer, sheet_name="Waterfall Summary", index=False)
+            if 'clean_closed_ids' in st.session_state:
+                pd.DataFrame({"Clean_Closed_User_IDs": sorted(st.session_state['clean_closed_ids'])}).to_excel(writer, sheet_name="Clean Closed User IDs", index=False)
+                pd.DataFrame({"Multi_Account_User_IDs": sorted(st.session_state['multi_ids'])}).to_excel(writer, sheet_name="Multi-Accounts", index=False)
+            if 'mb_summary_df' in st.session_state:
+                st.session_state['mb_summary_df'].to_excel(writer, sheet_name="Metabase Top-Up Volumes", index=False)
 
-                        m_col1, m_col2 = st.columns(2)
-                        m_col1.metric("Successful Top-Up Transactions", f"{len(successful_topups):,}")
-                        m_col2.metric("Total Top-Up Volume (EUR Equivalent)", f"{total_topup_eur:,.2f} €")
-
-                        st.write("#### Currency Breakdown & Applied ECB Rates:")
-                        st.dataframe(topup_summary, use_container_width=True)
-
-                # ============================================================
-                # EXPORT FULL MONTHLY REPORT TO EXCEL
-                # ============================================================
-                st.markdown("---")
-                output_waterfall = io.BytesIO()
-                with pd.ExcelWriter(output_waterfall, engine="xlsxwriter") as writer:
-                    summary_table.to_excel(writer, sheet_name="Waterfall Summary", index=False)
-                    if 'clean_closed_ids' in locals():
-                        pd.DataFrame({"Clean_Closed_User_IDs": sorted(clean_closed_ids)}).to_excel(writer, sheet_name="Clean Closed User IDs", index=False)
-                        pd.DataFrame({"Multi_Account_User_IDs": sorted(multi_ids)}).to_excel(writer, sheet_name="Multi-Accounts", index=False)
-                    if not mb_summary_df.empty:
-                        mb_summary_df.to_excel(writer, sheet_name="Metabase Top-Up Volumes", index=False)
-
-                st.download_button(
-                    label="📥 Download Complete Monthly Report (Excel)",
-                    data=output_waterfall.getvalue(),
-                    file_name=f"FinCrime_Monthly_Analysis_{yr}_{mn}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
+        st.download_button(
+            label="📥 Download Full Monthly Report (Excel)",
+            data=output_waterfall.getvalue(),
+            file_name=f"FinCrime_Monthly_Analysis_{yr}_{mn}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
                 
 # ============================================================
 # MODULE 4: TOP-UP DECLINES MONITORING
