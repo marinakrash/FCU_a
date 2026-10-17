@@ -800,13 +800,13 @@ elif module == "2. Acquiring Monitoring":
             )
 
 # ============================================================
-# MODULE 3: MONTHLY DECLINE REPORT (ORIGINAL WATERFALL & METABASE)
+# MODULE 3: MONTHLY DECLINE REPORT (ORIGINAL 3-STEP SEQUENTIAL PIPELINE)
 # ============================================================
 elif module == "3. Monthly Decline Report (Waterfall)":
     st.title("📊 Monthly Decline Waterfall & Metabase Volume")
-    st.write("Complete monthly analytics pipeline matching the original script logic.")
+    st.write("Original sequential monthly analysis pipeline: Waterfall -> Clean User IDs -> Metabase Volume.")
     
-    # Select Month & Year
+    # --- PERIOD SELECTOR ---
     col_y, col_m = st.columns(2)
     with col_y:
         yr = st.number_input("Select Analysis Year:", min_value=2020, max_value=2030, value=2026)
@@ -815,25 +815,27 @@ elif module == "3. Monthly Decline Report (Waterfall)":
     
     st.markdown("---")
     
-    # 3 Mandatory Uploaders
-    st.subheader("📂 Upload All 3 Required Input Files")
-    col_f1, col_f2, col_f3 = st.columns(3)
+    # ============================================================
+    # PHASE 1: SEON TRANSACTIONS & BLACKLIST UPLOAD
+    # ============================================================
+    st.subheader("1️⃣ STEP 1 & 2: Upload SEON Exports")
+    col_f1, col_f2 = st.columns(2)
     with col_f1:
-        f1 = st.file_uploader("1/3: SEON Transactions Export:", type=["xlsx", "csv"], key="m3_f1")
+        f1 = st.file_uploader("Upload 1/3: SEON Transactions Export:", type=["xlsx", "csv"], key="m3_step1_f1")
     with col_f2:
-        f2 = st.file_uploader("2/3: SEON Blacklist Export (CSV ;):", type=["csv", "xlsx"], key="m3_f2")
-    with col_f3:
-        f3 = st.file_uploader("3/3: Metabase Transactions Export:", type=["xlsx", "csv"], key="m3_f3")
+        f2 = st.file_uploader("Upload 2/3: SEON Blacklist Export (CSV ;):", type=["csv", "xlsx"], key="m3_step1_f2")
 
-    if f1 is not None and f2 is not None and f3 is not None:
-        if st.button("🚀 Run Analysis", type="primary"):
-            with st.spinner("Running complete analysis pipeline..."):
-                # ============================================================
-                # STEP 1: TRANSACTIONS WATERFALL
-                # ============================================================
-                st.subheader(f"STEP 1 · SEON TRANSACTIONS — WATERFALL ({calendar.month_name[mn]} {yr})")
+    if f1 is not None and f2 is not None:
+        if st.button("🚀 Run Step 1 & 2 (Waterfall & Clean User IDs)", type="primary"):
+            with st.spinner("Processing SEON Transactions Waterfall & Blacklist..."):
+                # Load Inputs
                 transactions = load_data(f1)
+                blacklist = load_data(f2, sep=';')
                 
+                transactions.columns = transactions.columns.astype(str).str.strip()
+                blacklist.columns = blacklist.columns.astype(str).str.strip()
+
+                # --- STEP 1: WATERFALL ANALYSIS ---
                 required_tx_cols = [
                     'action_type', 'payment_provider', 'date', 'state', 'email/domain',
                     'bin_country_code', 'user_country', 'merchant_country', 'ip_country',
@@ -894,15 +896,7 @@ elif module == "3. Monthly Decline Report (Waterfall)":
                     {'Description': 'True Reject Rate', 'Reject Rate (Count)': f'{true_reject_c:.2f}%'},
                 ])
 
-                st.dataframe(reporting_table, use_container_width=True)
-
-                # ============================================================
-                # STEP 2: BLACKLIST & CLOSED ACCOUNTS EXTRACTION
-                # ============================================================
-                st.markdown("---")
-                st.subheader(f"STEP 2 · SEON BLACKLIST — MONTHLY ANALYSIS ({calendar.month_name[mn]} {yr})")
-                blacklist = load_data(f2, sep=';')
-                
+                # --- STEP 2: BLACKLIST & CLOSED ACCOUNTS EXTRACTION ---
                 required_bl_cols = ['data field', 'value', 'comment']
                 missing_bl = [c for c in required_bl_cols if c not in blacklist.columns]
                 if missing_bl:
@@ -936,63 +930,84 @@ elif module == "3. Monthly Decline Report (Waterfall)":
                     {'Metric': 'Closed-account IDs identified', 'Count': len(closed_acc_user_ids)},
                     {'Metric': 'Closed-account IDs excluding multi-accounts', 'Count': len(clean_user_ids_list)},
                 ])
-                st.dataframe(account_summary, use_container_width=True)
 
-                st.subheader("USER IDS FOR METABASE QUERY")
-                st.code(result_ids_str if result_ids_str else "No eligible numeric user IDs found.", language="text")
+                # Store State in Session
+                st.session_state['m3_phase1_done'] = True
+                st.session_state['m3_reporting_table'] = reporting_table
+                st.session_state['m3_account_summary'] = account_summary
+                st.session_state['m3_clean_user_ids_list'] = clean_user_ids_list
+                st.session_state['m3_result_ids_str'] = result_ids_str
 
-                # ============================================================
-                # STEP 3: METABASE TOP-UP ANALYSIS & CURRENCY CONVERSION
-                # ============================================================
-                st.markdown("---")
-                st.subheader(f"STEP 3 · METABASE — TOP-UP ANALYSIS ({calendar.month_name[mn]} {yr})")
-                metabase = load_data(f3)
-                
-                required_mb_cols = ['status', 'transaction_type', 'pay_currency', 'pay_amount']
-                missing_mb = [c for c in required_mb_cols if c not in metabase.columns]
-                if missing_mb:
-                    st.error(f"Metabase export missing required columns: {', '.join(missing_mb)}")
-                    st.stop()
+    # ============================================================
+    # RENDER PHASE 1 RESULTS & PHASE 2 (METABASE UPLOAD)
+    # ============================================================
+    if st.session_state.get('m3_phase1_done', False):
+        st.markdown("---")
+        st.subheader(f"STEP 1 RESULTS · SEON TRANSACTIONS WATERFALL ({calendar.month_name[mn]} {yr})")
+        st.dataframe(st.session_state['m3_reporting_table'], use_container_width=True)
 
-                rates_to_eur = fetch_eur_rates()
+        st.subheader(f"STEP 2 RESULTS · CLOSED ACCOUNTS & MULTI-ACCOUNTS ({calendar.month_name[mn]} {yr})")
+        st.dataframe(st.session_state['m3_account_summary'], use_container_width=True)
 
-                metabase_month = metabase.copy()
-                metabase_month['pay_amount'] = pd.to_numeric(metabase_month['pay_amount'], errors='coerce').fillna(0)
-                metabase_month['pay_currency'] = metabase_month['pay_currency'].astype(str).str.strip().str.upper()
+        st.subheader("📋 USER IDS FOR METABASE QUERY (Copy below):")
+        st.code(st.session_state['m3_result_ids_str'] if st.session_state['m3_result_ids_str'] else "No eligible numeric user IDs found.", language="text")
 
-                successful_topups = metabase_month[
-                    (metabase_month['status'].astype(str).str.strip().str.lower() == 'accepted') &
-                    (metabase_month['transaction_type'].astype(str).str.strip().str.upper() == 'TYPE_TOP_UP')
-                ].copy()
+        st.markdown("---")
+        st.subheader("2️⃣ STEP 3: Upload Metabase Export (After running query with IDs above)")
+        f3 = st.file_uploader("Upload 3/3: Metabase Transactions Export:", type=["xlsx", "csv"], key="m3_step2_f3")
 
-                topup_summary = successful_topups.groupby('pay_currency', as_index=False)['pay_amount'].sum()
-                topup_summary['rate_to_eur'] = topup_summary['pay_currency'].map(rates_to_eur).fillna(1.0)
-                topup_summary['amount_eur'] = topup_summary['pay_amount'] * topup_summary['rate_to_eur']
-                total_topup_eur = topup_summary['amount_eur'].sum()
+        if f3 is not None:
+            if st.button("💶 Process Metabase Volume & Finalize Report", type="primary"):
+                with st.spinner("Processing Metabase Top-Up Volumes & Currency Rates..."):
+                    metabase = load_data(f3)
+                    
+                    required_mb_cols = ['status', 'transaction_type', 'pay_currency', 'pay_amount']
+                    missing_mb = [c for c in required_mb_cols if c not in metabase.columns]
+                    if missing_mb:
+                        st.error(f"Metabase export missing required columns: {', '.join(missing_mb)}")
+                        st.stop()
 
-                topup_overview = pd.DataFrame([
-                    {'Metric': 'Successful top-up transactions', 'Value': f'{len(successful_topups):,}'},
-                    {'Metric': 'Total top-up volume (EUR equivalent)', 'Value': f'{total_topup_eur:,.2f} EUR'},
-                ])
-                st.dataframe(topup_overview, use_container_width=True)
-                st.write("#### Currency Breakdown:")
-                st.dataframe(topup_summary.sort_values('amount_eur', ascending=False), use_container_width=True)
+                    rates_to_eur = fetch_eur_rates()
 
-                # Export full report button
-                output_report = io.BytesIO()
-                with pd.ExcelWriter(output_report, engine="xlsxwriter") as writer:
-                    reporting_table.to_excel(writer, sheet_name="Waterfall Summary", index=False)
-                    account_summary.to_excel(writer, sheet_name="Account Classification", index=False)
-                    pd.DataFrame({"Clean_Closed_User_IDs": sorted(clean_user_ids_list)}).to_excel(writer, sheet_name="Clean User IDs", index=False)
-                    topup_summary.to_excel(writer, sheet_name="Metabase Top-Up Volumes", index=False)
+                    metabase_month = metabase.copy()
+                    metabase_month['pay_amount'] = pd.to_numeric(metabase_month['pay_amount'], errors='coerce').fillna(0)
+                    metabase_month['pay_currency'] = metabase_month['pay_currency'].astype(str).str.strip().str.upper()
 
-                st.download_button(
-                    label="📥 Download Full Monthly Analysis Report (Excel)",
-                    data=output_report.getvalue(),
-                    file_name=f"FinCrime_Monthly_Statistic_{yr}_{mn}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
-                
+                    successful_topups = metabase_month[
+                        (metabase_month['status'].astype(str).str.strip().str.lower() == 'accepted') &
+                        (metabase_month['transaction_type'].astype(str).str.strip().str.upper() == 'TYPE_TOP_UP')
+                    ].copy()
+
+                    topup_summary = successful_topups.groupby('pay_currency', as_index=False)['pay_amount'].sum()
+                    topup_summary['rate_to_eur'] = topup_summary['pay_currency'].map(rates_to_eur).fillna(1.0)
+                    topup_summary['amount_eur'] = topup_summary['pay_amount'] * topup_summary['rate_to_eur']
+                    total_topup_eur = topup_summary['amount_eur'].sum()
+
+                    topup_overview = pd.DataFrame([
+                        {'Metric': 'Successful top-up transactions', 'Value': f'{len(successful_topups):,}'},
+                        {'Metric': 'Total top-up volume (EUR equivalent)', 'Value': f'{total_topup_eur:,.2f} EUR'},
+                    ])
+                    
+                    st.subheader(f"STEP 3 RESULTS · METABASE TOP-UP ANALYSIS ({calendar.month_name[mn]} {yr})")
+                    st.dataframe(topup_overview, use_container_width=True)
+                    st.write("#### Currency Breakdown:")
+                    st.dataframe(topup_summary.sort_values('amount_eur', ascending=False), use_container_width=True)
+
+                    # --- EXPORT FULL REPORT ---
+                    output_report = io.BytesIO()
+                    with pd.ExcelWriter(output_report, engine="xlsxwriter") as writer:
+                        st.session_state['m3_reporting_table'].to_excel(writer, sheet_name="Waterfall Summary", index=False)
+                        st.session_state['m3_account_summary'].to_excel(writer, sheet_name="Account Classification", index=False)
+                        pd.DataFrame({"Clean_Closed_User_IDs": sorted(st.session_state['m3_clean_user_ids_list'])}).to_excel(writer, sheet_name="Clean User IDs", index=False)
+                        topup_summary.to_excel(writer, sheet_name="Metabase Top-Up Volumes", index=False)
+
+                    st.download_button(
+                        label="📥 Download Complete Monthly Analysis Report (Excel)",
+                        data=output_report.getvalue(),
+                        file_name=f"FinCrime_Monthly_Statistic_{yr}_{mn}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    )
+                    
 # ============================================================
 # MODULE 4: TOP-UP DECLINES MONITORING
 # ============================================================
