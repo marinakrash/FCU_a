@@ -2,6 +2,7 @@ import io
 import os
 import re
 import json
+import zipfile
 import calendar
 import warnings
 import urllib.request
@@ -262,6 +263,18 @@ if module == "1. Case & Alert Monitoring":
                     fig_grp = px.pie(grp_counts, values="Count", names="alert_group", title="Alerts by Group")
                     st.plotly_chart(fig_grp, use_container_width=True)
 
+                # EXPORT BUTTON FOR ALERTS
+                output_alerts = io.BytesIO()
+                with pd.ExcelWriter(output_alerts, engine="xlsxwriter") as writer:
+                    daily.to_excel(writer, sheet_name="Daily Summary", index=False)
+                    top5.to_excel(writer, sheet_name="Top 5 Triggers", index=False)
+                st.download_button(
+                    label="📥 Download Alert Report (Excel)",
+                    data=output_alerts.getvalue(),
+                    file_name="Alert_Analytics_Report.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+
     elif sub_module == "Daily Case Monitoring Dashboard":
         st.title("📋 Daily Case Monitoring Dashboard")
         up_file = st.file_uploader("Upload Case File (CSV/XLSX):", type=["csv", "xlsx"])
@@ -296,6 +309,17 @@ if module == "1. Case & Alert Monitoring":
                     st_c = df.groupby("case_status")["case_id"].nunique().reset_index(name="Count")
                     fig_cs = px.pie(st_c, values="Count", names="case_status", title="Cases by Status")
                     st.plotly_chart(fig_cs, use_container_width=True)
+
+            # EXPORT BUTTON FOR CASES
+            output_cases = io.BytesIO()
+            with pd.ExcelWriter(output_cases, engine="xlsxwriter") as writer:
+                daily_case.to_excel(writer, sheet_name="Daily Summary", index=False)
+            st.download_button(
+                label="📥 Download Case Report (Excel)",
+                data=output_cases.getvalue(),
+                file_name="Case_Monitoring_Report.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
 
 # ============================================================
 # MODULE 2: ACQUIRING MONITORING
@@ -339,6 +363,17 @@ elif module == "2. Acquiring Monitoring":
                     annotation_text="Monitoring Window (Last 7 Days)"
                 )
                 st.plotly_chart(fig, use_container_width=True)
+
+            # EXPORT BUTTON FOR SPIKES REPORT
+            output_spikes = io.BytesIO()
+            with pd.ExcelWriter(output_spikes, engine="xlsxwriter") as writer:
+                daily_m.to_excel(writer, sheet_name="Daily Merchants Spike", index=False)
+            st.download_button(
+                label="📥 Download Top 10 Merchant Spikes Report (Excel)",
+                data=output_spikes.getvalue(),
+                file_name="SEON_Top10_Merchant_Decline_Spikes.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
             
     elif sub_module == "2.2 Single Merchant Historical Analysis":
         st.title("🔍 Single Merchant Deep Analysis")
@@ -395,6 +430,19 @@ elif module == "2. Acquiring Monitoring":
                 fig_rules = px.bar(rule_counts, x="Trigger Count", y="Rule Name", orientation="h", title="Top 10 Applied Rules")
                 st.plotly_chart(fig_rules, use_container_width=True)
 
+            # EXPORT BUTTON FOR SINGLE MERCHANT DEEP ANALYSIS
+            output_merchant = io.BytesIO()
+            with pd.ExcelWriter(output_merchant, engine="xlsxwriter") as writer:
+                daily_m.to_excel(writer, sheet_name="Daily Metrics", index=False)
+                if 'rule_counts' in locals():
+                    rule_counts.to_excel(writer, sheet_name="Top Rules", index=False)
+            st.download_button(
+                label=f"📥 Download Deep Analysis Report for Merchant {selected_m} (Excel)",
+                data=output_merchant.getvalue(),
+                file_name=f"SEON_Single_Merchant_Analysis_{selected_m}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+
 # ============================================================
 # MODULE 3: MONTHLY DECLINE REPORT (WATERFALL)
 # ============================================================
@@ -439,6 +487,18 @@ elif module == "3. Monthly Decline Report (Top-Up Waterfall)":
                 clean_str = ",".join(map(str, sorted(clean_closed_ids)))
                 st.subheader("📋 Clean Closed User IDs for Metabase Query:")
                 st.code(clean_str, language="text")
+
+                # EXPORT BUTTON FOR MONTHLY WATERFALL
+                output_waterfall = io.BytesIO()
+                with pd.ExcelWriter(output_waterfall, engine="xlsxwriter") as writer:
+                    pd.DataFrame({"Clean_Closed_User_IDs": sorted(clean_closed_ids)}).to_excel(writer, sheet_name="Clean Closed User IDs", index=False)
+                    pd.DataFrame({"Multi_Account_User_IDs": sorted(multi_ids)}).to_excel(writer, sheet_name="Multi-Accounts", index=False)
+                st.download_button(
+                    label="📥 Download Monthly Classification Summary (Excel)",
+                    data=output_waterfall.getvalue(),
+                    file_name=f"Monthly_Decline_User_Classification_{yr}_{mn}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
 
 # ============================================================
 # MODULE 4: TOP-UP DECLINES MONITORING
@@ -558,3 +618,16 @@ elif module == "4. Top-Up Declines Monitoring":
                     pm_spike = spike_df[pm_col_title].value_counts().head(5).reset_index()
                     fig_p3 = px.pie(pm_spike, values="count", names=pm_col_title, title=f"Payment Method on Spike ({spike_date})")
                     st.plotly_chart(fig_p3, use_container_width=True)
+
+        # EXPORT BUTTON FOR TOP-UP MONITORING
+        output_topup = io.BytesIO()
+        with pd.ExcelWriter(output_topup, engine="xlsxwriter") as writer:
+            daily_stats.to_excel(writer, sheet_name="Daily Trends", index=False)
+            if 'spike_geo' in locals():
+                spike_geo.to_excel(writer, sheet_name="Top Geo Routes", index=False)
+        st.download_button(
+            label="📥 Download Top-Up Monitoring Analytics Report (Excel)",
+            data=output_topup.getvalue(),
+            file_name="TopUp_Monitoring_Analytics_Report.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
