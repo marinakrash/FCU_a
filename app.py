@@ -800,7 +800,7 @@ elif module == "2. Acquiring Monitoring":
             )
 
 # ============================================================
-# MODULE 3: MONTHLY DECLINE REPORT (WATERFALL & METABASE)
+# MODULE 3: MONTHLY TOP-UP DECLINE REPORT
 # ============================================================
 elif module == "3. Monthly Decline Report (Waterfall)":
     st.title("📊 Monthly Decline Waterfall & Metabase Volume")
