@@ -120,6 +120,9 @@ RESTRICTED_COUNTRIES = [
 CLOSED_ACCOUNTS_MANAGERS = [
     'Maryna Krasheninnikova', 'Serhii Kryhin', 'Oksana Moskalenko', 'Yevheniia Linichenko'
 ]
+ANALYZED_ASSIGNEES = [
+    "Maryna Krasheninnikova", "Oksana Moskalenko", "Yevheniia Linichenko", "Serhii Kryhin", "Anti-Fraud"
+]
 
 # ============================================================
 # HELPER FUNCTIONS
@@ -180,8 +183,15 @@ def parse_rule_ids(value):
         s = str(value).strip()
         if s.lower() in {"", "nan", "none", "null"}:
             return []
-        s = s.strip("[](){}")
-        values = s.replace(";", ",").split(",")
+        try:
+            parsed = json.loads(s)
+            if isinstance(parsed, list):
+                values = parsed
+            else:
+                values = [parsed]
+        except Exception:
+            s = s.strip("[](){}")
+            values = s.replace(";", ",").split(",")
 
     result = []
     for item in values:
@@ -189,6 +199,34 @@ def parse_rule_ids(value):
         if rule_id and rule_id.lower() not in {"nan", "none", "null"}:
             if rule_id not in result:
                 result.append(rule_id)
+    return result
+
+def relative_change(current, baseline):
+    if baseline <= 0:
+        return np.nan
+    return (current / baseline - 1) * 100
+
+def label_consecutive_declines(data, timeframe_hours=0.25):
+    result = data.copy()
+    result['date'] = pd.to_datetime(result['date'], utc=True, errors='coerce')
+    result = result.sort_values(['email/raw_email', 'date']).copy()
+    result['consecutive_decline'] = False
+    for _, group in result[result['email/raw_email'].notna()].groupby('email/raw_email', sort=False):
+        last_decline_time = None
+        for idx in group.index:
+            state = result.at[idx, 'state']
+            current_time = result.at[idx, 'date']
+            if pd.isna(current_time):
+                continue
+            if state == 'DECLINE':
+                is_consecutive = (
+                    last_decline_time is not None and
+                    (current_time - last_decline_time).total_seconds() <= timeframe_hours * 3600
+                )
+                result.at[idx, 'consecutive_decline'] = is_consecutive
+                last_decline_time = current_time
+            elif state == 'APPROVE':
+                last_decline_time = None
     return result
 
 # ============================================================
@@ -226,17 +264,24 @@ if module == "1. Case & Alert Monitoring":
             if not all(col in df.columns for col in required_columns):
                 st.error(f"Missing required columns: {[c for c in required_columns if c not in df.columns]}")
             else:
+                if ANALYZED_ASSIGNEES:
+                    df = df[df["alert_assignee"].astype(str).str.strip().isin(ANALYZED_ASSIGNEES)].copy()
+                
                 df["alert_created_at"] = pd.to_datetime(df["alert_created_at"], errors="coerce")
                 df = df.dropna(subset=["alert_created_at"]).copy()
                 df["alert_date"] = df["alert_created_at"].dt.date
                 
-                def classify_alert(t):
-                    t = str(t)
-                    for k in ["Policy Breach", "IoCs", "CP", "Synthetic and Coordinated Activity"]:
-                        if t.startswith(k): return k
+                def classify_alert_group(trigger):
+                    trigger = str(trigger).strip()
+                    if trigger.startswith("Policy Breach"): return "Policy Breach"
+                    if trigger.startswith("IoCs"): return "IoCs"
+                    if trigger.startswith("CP"): return "CP"
+                    if trigger.startswith("Synthetic and Coordinated Activity"): return "Synthetic and Coordinated Activity"
                     return "Other"
-                df["alert_group"] = df["alert_trigger_name"].apply(classify_alert)
-                
+
+                df["alert_group"] = df["alert_trigger_name"].apply(classify_alert_group)
+                df = df.drop_duplicates(subset=["alert_id"]).copy()
+
                 assignees = ["ALL"] + sorted(df["alert_assignee"].dropna().unique().tolist())
                 sel_assignee = st.selectbox("Assignee Filter:", assignees)
                 
@@ -263,10 +308,15 @@ if module == "1. Case & Alert Monitoring":
                     fig_grp = px.pie(grp_counts, values="Count", names="alert_group", title="Alerts by Group")
                     st.plotly_chart(fig_grp, use_container_width=True)
 
-                # EXPORT BUTTON FOR ALERTS
+                daily_summary = df.groupby(["alert_date", "alert_group"])["alert_id"].nunique().reset_index(name="Alerts")
+                daily_summary = daily_summary.pivot(index="alert_date", columns="alert_group", values="Alerts").fillna(0).reset_index()
+                
+                st.subheader("Daily Summary Table")
+                st.dataframe(daily_summary, use_container_width=True)
+
                 output_alerts = io.BytesIO()
                 with pd.ExcelWriter(output_alerts, engine="xlsxwriter") as writer:
-                    daily.to_excel(writer, sheet_name="Daily Summary", index=False)
+                    daily_summary.to_excel(writer, sheet_name="Daily Summary", index=False)
                     top5.to_excel(writer, sheet_name="Top 5 Triggers", index=False)
                 st.download_button(
                     label="📥 Download Alert Report (Excel)",
@@ -280,19 +330,26 @@ if module == "1. Case & Alert Monitoring":
         up_file = st.file_uploader("Upload Case File (CSV/XLSX):", type=["csv", "xlsx"])
         if up_file:
             df = load_data(up_file)
+            if ANALYZED_ASSIGNEES and "case_assignee" in df.columns:
+                df = df[df["case_assignee"].astype(str).str.strip().isin(ANALYZED_ASSIGNEES)].copy()
+
             df["case_created_at"] = pd.to_datetime(df["case_created_at"], errors="coerce")
             df = df.dropna(subset=["case_created_at"]).copy()
             df["case_date"] = df["case_created_at"].dt.date
             
-            def classify_case(t):
-                t = str(t)
-                for k in ["Policy Breach", "IoCs", "CP", "Synthetic and Coordinated Activity", "ACQ_"]:
-                    if t.startswith(k): return k
+            def classify_case_group(title):
+                title = str(title).strip()
+                if title.startswith("Policy Breach"): return "Policy Breach"
+                if title.startswith("IoCs"): return "IoCs"
+                if title.startswith("CP"): return "CP"
+                if title.startswith("Synthetic and Coordinated Activity"): return "Synthetic and Coordinated Activity"
+                if title.startswith("ACQ_"): return "ACQ"
                 return "Other"
-            
+
             if "case_title" in df.columns:
-                df["case_group"] = df["case_title"].apply(classify_case)
-            
+                df["case_group"] = df["case_title"].apply(classify_case_group)
+            df = df.drop_duplicates(subset=["case_id"]).copy()
+
             st.metric("Total Cases", f"{df['case_id'].nunique():,}")
             daily_case = df.groupby("case_date")["case_id"].nunique().reset_index(name="Cases")
             fig_c = px.line(daily_case, x="case_date", y="Cases", title="Daily Case Trend", markers=True)
@@ -310,7 +367,6 @@ if module == "1. Case & Alert Monitoring":
                     fig_cs = px.pie(st_c, values="Count", names="case_status", title="Cases by Status")
                     st.plotly_chart(fig_cs, use_container_width=True)
 
-            # EXPORT BUTTON FOR CASES
             output_cases = io.BytesIO()
             with pd.ExcelWriter(output_cases, engine="xlsxwriter") as writer:
                 daily_case.to_excel(writer, sheet_name="Daily Summary", index=False)
@@ -340,106 +396,210 @@ elif module == "2. Acquiring Monitoring":
             df = load_data(up_file)
             st.success(f"Loaded acquiring records: {len(df):,}")
             
-            df["_date_day"] = pd.to_datetime(df["date"].astype(str).str[:10], errors="coerce").dt.normalize()
-            df["state"] = df["state"].fillna("").astype(str).str.strip().str.upper()
-            df = df[df["state"].isin(["APPROVE", "DECLINE"])].copy()
+            DATE_COLUMN = "date"
+            STATE_COLUMN = "state"
+            MERCHANT_COLUMN = "merchant_id"
+            MERCHANT_NAME_COLUMN = "user_fullname"
+            TRANSACTION_ID_COLUMN = "transaction_id"
+            RULES_COLUMN = "applied_rule_ids"
+            EMAIL_COLUMN = "email/email"
+            
+            df["_date_day"] = pd.to_datetime(df[DATE_COLUMN].astype(str).str[:10], errors="coerce").dt.normalize()
+            df[STATE_COLUMN] = df[STATE_COLUMN].fillna("").astype(str).str.strip().str.upper()
+            df[MERCHANT_COLUMN] = df[MERCHANT_COLUMN].fillna("").astype(str).str.strip()
+            df[MERCHANT_NAME_COLUMN] = df[MERCHANT_NAME_COLUMN].fillna("").astype(str).str.strip()
+            df[TRANSACTION_ID_COLUMN] = df[TRANSACTION_ID_COLUMN].fillna("").astype(str).str.strip()
+            
+            df = df[df["_date_day"].notna() & df[MERCHANT_COLUMN].ne("")].copy()
+            df["_transaction_key"] = df[TRANSACTION_ID_COLUMN]
+            missing_tx_id = df["_transaction_key"].eq("")
+            df.loc[missing_tx_id, "_transaction_key"] = [f"_missing_tx_{i}" for i in df.index[missing_tx_id]]
+            
+            df = df.drop_duplicates(subset=["_transaction_key"], keep="first").copy()
+            df = df[df[STATE_COLUMN].isin(["APPROVE", "DECLINE"])].copy()
             
             latest_date = df["_date_day"].max()
             monitoring_start = latest_date - pd.Timedelta(days=6)
             
-            daily_m = df.groupby(["merchant_id", "_date_day"]).agg(
-                total=("transaction_id", "nunique"),
-                declines=("state", lambda s: (s == "DECLINE").sum())
+            monitoring_df = df[df["_date_day"] >= monitoring_start].copy()
+            baseline_df = df[df["_date_day"] < monitoring_start].copy()
+            
+            baseline_stats = baseline_df.groupby(MERCHANT_COLUMN).agg(
+                baseline_transactions=("_transaction_key", "nunique"),
+                baseline_declines=(STATE_COLUMN, lambda s: (s == "DECLINE").sum()),
+                baseline_active_days=("_date_day", "nunique"),
             ).reset_index()
-            daily_m["decline_rate"] = daily_m["declines"] / daily_m["total"] * 100
+            baseline_stats["baseline_decline_rate"] = baseline_stats["baseline_declines"] / baseline_stats["baseline_transactions"]
             
-            merchants = daily_m["merchant_id"].unique()[:10]
-            for m_id in merchants:
-                m_data = daily_m[daily_m["merchant_id"] == m_id]
-                fig = px.line(m_data, x="_date_day", y="decline_rate", title=f"Merchant {m_id} - Decline Rate Timeline")
-                fig.add_vrect(
-                    x0=monitoring_start, x1=latest_date,
-                    fillcolor="rgba(255,0,0,0.15)", line_width=0,
-                    annotation_text="Monitoring Window (Last 7 Days)"
-                )
-                st.plotly_chart(fig, use_container_width=True)
+            eligible_merchants = baseline_stats[baseline_stats["baseline_active_days"] >= 21].copy()
+            eligible_ids = set(eligible_merchants[MERCHANT_COLUMN])
+            
+            monitoring_eligible = monitoring_df[monitoring_df[MERCHANT_COLUMN].isin(eligible_ids)].copy()
+            
+            daily_stats = monitoring_eligible.groupby([MERCHANT_COLUMN, "_date_day"]).agg(
+                total_transactions=("_transaction_key", "nunique"),
+                declined_transactions=(STATE_COLUMN, lambda s: (s == "DECLINE").sum()),
+            ).reset_index()
+            daily_stats["decline_rate"] = daily_stats["declined_transactions"] / daily_stats["total_transactions"]
+            daily_stats = daily_stats.merge(eligible_merchants[[MERCHANT_COLUMN, "baseline_decline_rate", "baseline_active_days"]], on=MERCHANT_COLUMN, how="left")
+            
+            spikes = daily_stats[(daily_stats["total_transactions"] >= 10) & (daily_stats["decline_rate"] > 0.06) & (daily_stats["decline_rate"] > daily_stats["baseline_decline_rate"])].copy()
+            
+            if not spikes.empty:
+                spikes["increase_pp"] = (spikes["decline_rate"] - spikes["baseline_decline_rate"]) * 100
+                spikes["relative_increase"] = np.where(spikes["baseline_decline_rate"] > 0, (spikes["decline_rate"] - spikes["baseline_decline_rate"]) / spikes["baseline_decline_rate"], np.inf)
+                spikes["relative_increase_pct"] = spikes["relative_increase"] * 100
+                spikes["spike_date"] = spikes["_date_day"]
+                
+                rank_rows = []
+                for merchant_id, merchant_spikes in spikes.groupby(MERCHANT_COLUMN):
+                    merchant_spikes = merchant_spikes.sort_values(["relative_increase", "increase_pp", "decline_rate"], ascending=False)
+                    max_spike = merchant_spikes.iloc[0]
+                    
+                    name_values = monitoring_eligible.loc[monitoring_eligible[MERCHANT_COLUMN] == merchant_id, MERCHANT_NAME_COLUMN].dropna().astype(str)
+                    name_values = name_values[name_values.str.strip().ne("")]
+                    merchant_name = name_values.mode().iloc[0] if not name_values.empty else ""
+                    
+                    rank_rows.append({
+                        MERCHANT_COLUMN: merchant_id,
+                        MERCHANT_NAME_COLUMN: merchant_name,
+                        "baseline_decline_rate": max_spike["baseline_decline_rate"],
+                        "baseline_active_days": int(max_spike["baseline_active_days"]),
+                        "max_spike_date": max_spike["spike_date"],
+                        "max_spike_decline_rate": max_spike["decline_rate"],
+                        "max_spike_increase_pp": max_spike["increase_pp"],
+                        "max_relative_increase": max_spike["relative_increase"],
+                        "max_relative_increase_pct": max_spike["relative_increase_pct"],
+                        "spike_days_count": int(len(merchant_spikes)),
+                        "total_spike_declines": int(merchant_spikes["declined_transactions"].sum()),
+                    })
+                
+                top_merchants = pd.DataFrame(rank_rows).sort_values(["max_relative_increase", "max_spike_increase_pp"], ascending=False).head(10).reset_index(drop=True)
+                top_merchants.insert(0, "rank", range(1, len(top_merchants) + 1))
+                
+                st.subheader("Top 10 Spiking Merchants")
+                st.dataframe(top_merchants, use_container_width=True)
+                
+                min_date = df["_date_day"].min()
+                full_dates = pd.date_range(start=min_date, end=latest_date, freq="D")
+                
+                all_daily_stats = df[df[MERCHANT_COLUMN].isin(eligible_ids)].groupby([MERCHANT_COLUMN, "_date_day"]).agg(
+                    total_transactions=("_transaction_key", "nunique"),
+                    declined_transactions=(STATE_COLUMN, lambda s: (s == "DECLINE").sum()),
+                ).reset_index()
+                all_daily_stats["decline_rate"] = all_daily_stats["declined_transactions"] / all_daily_stats["total_transactions"]
+                
+                for _, merchant_row in top_merchants.iterrows():
+                    m_id = str(merchant_row[MERCHANT_COLUMN])
+                    m_name = str(merchant_row[MERCHANT_NAME_COLUMN])
+                    m_daily = all_daily_stats[all_daily_stats[MERCHANT_COLUMN].astype(str) == m_id].copy().set_index("_date_day")
+                    chart_rates = m_daily["decline_rate"].reindex(full_dates)
+                    
+                    fig = px.line(x=full_dates, y=chart_rates * 100, title=f"Historical Timeline — Merchant: {m_name} | ID: {m_id}")
+                    fig.add_vrect(x0=monitoring_start, x1=latest_date, fillcolor="rgba(255,0,0,0.15)", line_width=0, annotation_text="Monitoring Window")
+                    fig.add_hline(y=float(merchant_row["baseline_decline_rate"]) * 100, line_dash="dash", line_color="green", annotation_text="Baseline")
+                    fig.add_hline(y=6.0, line_dash="dot", line_color="red", annotation_text="Threshold 6%")
+                    st.plotly_chart(fig, use_container_width=True)
 
-            # EXPORT BUTTON FOR SPIKES REPORT
-            output_spikes = io.BytesIO()
-            with pd.ExcelWriter(output_spikes, engine="xlsxwriter") as writer:
-                daily_m.to_excel(writer, sheet_name="Daily Merchants Spike", index=False)
-            st.download_button(
-                label="📥 Download Top 10 Merchant Spikes Report (Excel)",
-                data=output_spikes.getvalue(),
-                file_name="SEON_Top10_Merchant_Decline_Spikes.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
-            
+                output_spikes = io.BytesIO()
+                with pd.ExcelWriter(output_spikes, engine="xlsxwriter") as writer:
+                    top_merchants.to_excel(writer, sheet_name="Top 10 Merchants", index=False)
+                    spikes.to_excel(writer, sheet_name="Spike Dates", index=False)
+                st.download_button(
+                    label="📥 Download Top 10 Merchant Spikes Report (Excel)",
+                    data=output_spikes.getvalue(),
+                    file_name="SEON_Top10_Merchant_Decline_Spikes.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+
     elif sub_module == "2.2 Single Merchant Historical Analysis":
         st.title("🔍 Single Merchant Deep Analysis")
         up_file = st.file_uploader("Upload SEON Acquiring Export:", type=["xlsx", "csv"])
         if up_file:
             df = load_data(up_file)
-            merchants = df["merchant_id"].dropna().unique()
-            selected_m = st.selectbox("Select Merchant ID:", merchants)
             
-            m_df = df[df["merchant_id"] == selected_m].copy()
-            m_df["date"] = pd.to_datetime(m_df["date"]).dt.date
+            CARD_COUNTRY_COL = "bin_country_code" if "bin_country_code" in df.columns else "card_country"
+            IP_COUNTRY_COL = "ip_country"
+            EMAIL_COL = "email/email"
             
-            daily_m = m_df.groupby("date").agg(
-                total=("state", "count"),
-                declines=("state", lambda s: (s == "DECLINE").sum())
-            ).reset_index()
-            daily_m["decline_rate"] = daily_m["declines"] / daily_m["total"] * 100
+            df["date"] = pd.to_datetime(df["date"], errors="coerce", utc=True).dt.tz_convert(None).dt.normalize()
+            df = df.dropna(subset=["merchant_id", "date"]).copy()
+            df["merchant_id"] = df["merchant_id"].astype(str).str.strip()
+            df["state"] = df["state"].astype(str).str.strip().str.upper()
             
-            fig = px.line(daily_m, x="date", y="decline_rate", title=f"Historical Decline Rate for Merchant {selected_m}")
+            unique_merchants = sorted(df["merchant_id"].unique())
+            selected_m = st.selectbox("Select Merchant ID to Analyze:", unique_merchants)
+            
+            merchant_df = df[df["merchant_id"] == selected_m].copy()
+            merchant_df["is_decline"] = merchant_df["state"].eq("DECLINE")
+            merchant_df["is_approve"] = merchant_df["state"].eq("APPROVE")
+            
+            daily = merchant_df.groupby("date").agg(
+                total_transactions=("state", "size"),
+                declined_transactions=("is_decline", "sum"),
+                approved_transactions=("is_approve", "sum")
+            ).reset_index().sort_values("date")
+            
+            daily["decline_rate_pct"] = (daily["declined_transactions"] / daily["total_transactions"]) * 100
+            active_daily = daily[daily["total_transactions"] > 0].copy()
+            decline_baseline = float(active_daily["decline_rate_pct"].mean()) if not active_daily.empty else 0.0
+            
+            daily["decline_change_pct"] = daily["decline_rate_pct"].apply(lambda x: relative_change(x, decline_baseline))
+            daily["decline_spike"] = (daily["decline_rate_pct"] >= 6.0) & (daily["decline_change_pct"] >= 50.0)
+            
+            fig = px.line(daily, x="date", y="decline_rate_pct", title=f"Historical Decline Rate — Merchant: {selected_m}")
+            fig.add_hline(y=decline_baseline, line_dash="dash", line_color="green", annotation_text=f"Baseline ({decline_baseline:.2f}%)")
+            fig.add_hline(y=6.0, line_dash="dot", line_color="red", annotation_text="Min 6%")
             st.plotly_chart(fig, use_container_width=True)
             
-            # --- CARD vs IP COUNTRY CROSS MATRIX ---
-            st.subheader("🌐 Card Country vs IP Country Heatmap (Top 10)")
-            card_col = "bin_country_code" if "bin_country_code" in m_df.columns else "card_country"
-            ip_col = "ip_country"
+            # --- TOP RULE TRIGGER RATIO SPIKES (TOP 5) ---
+            st.subheader("📌 Top 5 Rule Trigger Ratio Spikes")
+            rule_source = merchant_df[["date", "state", "applied_rule_ids"]].copy() if "applied_rule_ids" in merchant_df.columns else pd.DataFrame()
+            if not rule_source.empty:
+                rule_source["rule_id"] = rule_source["applied_rule_ids"].apply(parse_rule_ids)
+                rule_long = rule_source.explode("rule_id").dropna(subset=["rule_id"]).copy()
+                rule_long["is_decline"] = rule_long["state"].eq("DECLINE")
+                
+                rule_daily = rule_long.groupby(["date", "rule_id"]).agg(
+                    rule_trigger_count=("state", "size"),
+                    rule_declined_count=("is_decline", "sum")
+                ).reset_index()
+                
+                rule_daily["rule_name"] = rule_daily["rule_id"].apply(get_rule_name)
+                rule_summary = rule_daily.groupby(["rule_id", "rule_name"])["rule_trigger_count"].sum().nlargest(5).reset_index()
+                st.dataframe(rule_summary, use_container_width=True)
             
-            if card_col in m_df.columns and ip_col in m_df.columns:
-                ct = pd.crosstab(
-                    m_df[card_col].fillna("Unknown"),
-                    m_df[ip_col].fillna("Unknown")
-                )
-                top_cards = m_df[card_col].fillna("Unknown").value_counts().head(10).index
-                top_ips = m_df[ip_col].fillna("Unknown").value_counts().head(10).index
+            # --- HEATMAP: CARD VS IP COUNTRY ---
+            if CARD_COUNTRY_COL in merchant_df.columns and IP_COUNTRY_COL in merchant_df.columns:
+                st.subheader("🌐 Card Country vs IP Country Matrix (Top 10)")
+                ct = pd.crosstab(merchant_df[CARD_COUNTRY_COL].fillna("Unknown"), merchant_df[IP_COUNTRY_COL].fillna("Unknown"))
+                top_cards = merchant_df[CARD_COUNTRY_COL].fillna("Unknown").value_counts().head(10).index
+                top_ips = merchant_df[IP_COUNTRY_COL].fillna("Unknown").value_counts().head(10).index
                 ct_filtered = ct.loc[ct.index.isin(top_cards), ct.columns.isin(top_ips)]
                 
-                fig_hm = px.imshow(
-                    ct_filtered, 
-                    labels=dict(x="IP Country", y="Card Country", color="Transactions"),
-                    text_auto=True,
-                    color_continuous_scale="YlGnBu"
-                )
+                fig_hm = px.imshow(ct_filtered, text_auto=True, color_continuous_scale="YlGnBu", title="Country Cross-Analysis Matrix")
                 st.plotly_chart(fig_hm, use_container_width=True)
             
-            # --- TOP RULES FOR MERCHANT ---
-            st.subheader("📌 Top Applied Rules Breakdown")
-            if "applied_rule_ids" in m_df.columns:
-                m_df["parsed_rules"] = m_df["applied_rule_ids"].apply(parse_rule_ids)
-                rules_exploded = m_df.explode("parsed_rules").dropna(subset=["parsed_rules"])
-                rules_exploded["rule_name"] = rules_exploded["parsed_rules"].apply(get_rule_name)
-                
-                rule_counts = rules_exploded["rule_name"].value_counts().head(10).reset_index()
-                rule_counts.columns = ["Rule Name", "Trigger Count"]
-                
-                fig_rules = px.bar(rule_counts, x="Trigger Count", y="Rule Name", orientation="h", title="Top 10 Applied Rules")
-                st.plotly_chart(fig_rules, use_container_width=True)
+            # --- TOP PAYER EMAILS DURING LATEST DECLINE SPIKE ---
+            spike_dates = daily.loc[daily["decline_spike"], "date"].dropna()
+            if not spike_dates.empty:
+                st.subheader("✉️ Top Payer Emails During Latest Spike")
+                latest_spike = spike_dates.max()
+                spike_tx = merchant_df[(merchant_df["date"] == latest_spike) & (merchant_df["state"] == "DECLINE")]
+                if EMAIL_COL in spike_tx.columns:
+                    top_emails = spike_tx[EMAIL_COL].value_counts().head(10).reset_index()
+                    top_emails.columns = ["Email", "Declined Transactions"]
+                    st.dataframe(top_emails, use_container_width=True)
 
-            # EXPORT BUTTON FOR SINGLE MERCHANT DEEP ANALYSIS
             output_merchant = io.BytesIO()
             with pd.ExcelWriter(output_merchant, engine="xlsxwriter") as writer:
-                daily_m.to_excel(writer, sheet_name="Daily Metrics", index=False)
-                if 'rule_counts' in locals():
-                    rule_counts.to_excel(writer, sheet_name="Top Rules", index=False)
+                daily.to_excel(writer, sheet_name="Daily Merchant Metrics", index=False)
+                if 'rule_summary' in locals():
+                    rule_summary.to_excel(writer, sheet_name="Top 5 Rule Spikes", index=False)
             st.download_button(
-                label=f"📥 Download Deep Analysis Report for Merchant {selected_m} (Excel)",
+                label=f"📥 Download Deep Analysis Report ({selected_m})",
                 data=output_merchant.getvalue(),
-                file_name=f"SEON_Single_Merchant_Analysis_{selected_m}.xlsx",
+                file_name=f"SEON_Analysis_{selected_m}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
 
@@ -463,6 +623,37 @@ elif module == "3. Monthly Decline Report (Top-Up Waterfall)":
             with st.spinner("Processing waterfall and excluding multi-accounts..."):
                 tx_df = load_data(f1)
                 bl_df = load_data(f2, sep=";")
+                
+                tx_df['action_type'] = tx_df['action_type'].astype(str).str.strip().str.lower() if 'action_type' in tx_df.columns else "purchase"
+                tx_df['payment_provider'] = pd.to_numeric(tx_df['payment_provider'], errors='coerce') if 'payment_provider' in tx_df.columns else 0
+                tx_scope = tx_df[(tx_df['action_type'] == 'purchase') & (tx_df['payment_provider'] != 521268264)].copy()
+                
+                step_1 = tx_scope[~tx_scope['email/domain'].astype(str).str.strip().str.lower().isin(EXCLUDED_DOMAINS)].copy() if 'email/domain' in tx_scope.columns else tx_scope.copy()
+                step_2 = step_1[
+                    (~step_1['bin_country_code'].astype(str).str.strip().str.upper().isin(RESTRICTED_COUNTRIES)) &
+                    (~step_1['user_country'].astype(str).str.strip().str.upper().isin(RESTRICTED_COUNTRIES)) &
+                    (~step_1['merchant_country'].astype(str).str.strip().str.upper().isin(RESTRICTED_COUNTRIES)) &
+                    (~step_1['ip_country'].astype(str).str.strip().str.upper().isin(RESTRICTED_COUNTRIES))
+                ].copy() if all(c in step_1.columns for c in ['bin_country_code', 'user_country', 'merchant_country', 'ip_country']) else step_1.copy()
+                
+                step_3 = label_consecutive_declines(step_2, 0.25) if 'email/raw_email' in step_2.columns else step_2.copy()
+                step_4 = step_3[~step_3['consecutive_decline']].copy() if 'consecutive_decline' in step_3.columns else step_3.copy()
+                
+                def pct(num, den): return num / den * 100 if den else 0.0
+                raw_c = pct((step_1['state'].astype(str).str.upper() == 'DECLINE').sum(), len(step_1))
+                restricted_c = pct((step_2['state'].astype(str).str.upper() == 'DECLINE').sum(), len(step_2))
+                true_reject_c = pct((step_4['state'].astype(str).str.upper() == 'DECLINE').sum(), len(step_4))
+                
+                restricted_impact = raw_c - restricted_c
+                consecutive_impact = restricted_c - true_reject_c
+                
+                summary_table = pd.DataFrame([
+                    {'Description': 'Raw Decline Rate Without Tests accounts', 'Reject Rate (Count)': f'{raw_c:.2f}%'},
+                    {'Description': 'Sanctioned/Restricted Countries Filtered Out', 'Reject Rate (Count)': f'{restricted_impact:.2f}%'},
+                    {'Description': 'Consecutive Declines Deduplication', 'Reject Rate (Count)': f'{consecutive_impact:.2f}%'},
+                    {'Description': 'True Reject Rate', 'Reject Rate (Count)': f'{true_reject_c:.2f}%'},
+                ])
+                st.dataframe(summary_table, use_container_width=True)
                 
                 df_multi = bl_df[
                     (bl_df["data field"] == "user_id") & 
@@ -488,9 +679,9 @@ elif module == "3. Monthly Decline Report (Top-Up Waterfall)":
                 st.subheader("📋 Clean Closed User IDs for Metabase Query:")
                 st.code(clean_str, language="text")
 
-                # EXPORT BUTTON FOR MONTHLY WATERFALL
                 output_waterfall = io.BytesIO()
                 with pd.ExcelWriter(output_waterfall, engine="xlsxwriter") as writer:
+                    summary_table.to_excel(writer, sheet_name="Waterfall Summary", index=False)
                     pd.DataFrame({"Clean_Closed_User_IDs": sorted(clean_closed_ids)}).to_excel(writer, sheet_name="Clean Closed User IDs", index=False)
                     pd.DataFrame({"Multi_Account_User_IDs": sorted(multi_ids)}).to_excel(writer, sheet_name="Multi-Accounts", index=False)
                 st.download_button(
@@ -538,7 +729,6 @@ elif module == "4. Top-Up Declines Monitoring":
         c3.metric("Failed Tx", f"{failed_tx:,}")
         c4.metric("Loss Amount (Failed)", f"{failed_amount:,.2f} EUR")
         
-        # --- CHART 1: OVERALL vs SEON DECLINE RATE TREND ---
         st.subheader("📈 Overall Decline Rate vs. SEON Decline Rate Trend")
         daily_stats = df.groupby('date_only').agg(
             accepted=('is_accepted', 'sum'),
@@ -558,7 +748,6 @@ elif module == "4. Top-Up Declines Monitoring":
         failed_df = df[df['is_failed']]
         
         if not failed_df.empty:
-            # --- CHARTS 2 & 3: USER COUNTRY & CARD COUNTRY ---
             col1, col2 = st.columns(2)
             with col1:
                 if 'user_country' in failed_df.columns:
@@ -573,7 +762,6 @@ elif module == "4. Top-Up Declines Monitoring":
                     fig2 = px.bar(top_card_c, x="count", y="card_country", orientation="h", title="Top Card Issuer Countries (Declines)")
                     st.plotly_chart(fig2, use_container_width=True)
 
-            # --- CHARTS 4 & 5: ROUTE ANALYTICS & PAYMENT METHODS ---
             col3, col4 = st.columns(2)
             with col3:
                 if 'user_country' in failed_df.columns and 'card_country' in failed_df.columns:
@@ -589,7 +777,6 @@ elif module == "4. Top-Up Declines Monitoring":
                     fig_pm = px.bar(top_pm, x="count", y="method", orientation="h", title="Top Payment Methods (Declines)")
                     st.plotly_chart(fig_pm, use_container_width=True)
 
-            # --- SECTION 6: PEAK SPIKE DAY DRILL-DOWN (3 PIE CHARTS) ---
             st.markdown("---")
             st.subheader("🚨 Peak Spike Day Drill-Down Analytics")
             spike_daily = failed_df.groupby('date_only').size().reset_index(name='failed_count')
@@ -619,7 +806,6 @@ elif module == "4. Top-Up Declines Monitoring":
                     fig_p3 = px.pie(pm_spike, values="count", names=pm_col_title, title=f"Payment Method on Spike ({spike_date})")
                     st.plotly_chart(fig_p3, use_container_width=True)
 
-        # EXPORT BUTTON FOR TOP-UP MONITORING
         output_topup = io.BytesIO()
         with pd.ExcelWriter(output_topup, engine="xlsxwriter") as writer:
             daily_stats.to_excel(writer, sheet_name="Daily Trends", index=False)
