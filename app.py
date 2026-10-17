@@ -800,22 +800,23 @@ elif module == "2. Acquiring Monitoring":
             )
 
 # ============================================================
-# MODULE 3: MONTHLY DECLINE REPORT (WATERFALL WITH NET TP SHARE)
+# MODULE 3: MONTHLY DECLINE REPORT (WATERFALL & METABASE)
 # ============================================================
 elif module == "3. Monthly Decline Report (Waterfall)":
     st.title("📊 Monthly Decline Waterfall & Metabase Volume")
-    st.write("Complete monthly analytics pipeline matching exact original script logic and metrics.")
+    st.write("Complete monthly analytics pipeline matching the exact reference Google Colab logic.")
     
     # Select Month & Year
     col_y, col_m = st.columns(2)
     with col_y:
-        yr = st.number_input("Select Analysis Year:", min_value=2020, max_value=2030, value=2026)
+        ANALYSIS_YEAR = st.number_input("Select Analysis Year:", min_value=2020, max_value=2030, value=2026)
     with col_m:
-        mn = st.selectbox("Select Analysis Month:", list(range(1, 13)), index=8, format_func=lambda m: calendar.month_name[m])
+        ANALYSIS_MONTH = st.selectbox("Select Analysis Month:", list(range(1, 13)), index=8, format_func=lambda m: calendar.month_name[m])
     
+    month_label = f"{calendar.month_name[ANALYSIS_MONTH]} {ANALYSIS_YEAR}"
     st.markdown("---")
     
-    # --- PHASE 1: UPLOAD SEON TRANSACTIONS & BLACKLIST ---
+    # --- PHASE 1: UPLOAD SEON TRANSACTIONS & SEON BLACKLIST ---
     st.subheader("1️⃣ STEP 1 & 2: Upload SEON Exports")
     col_f1, col_f2 = st.columns(2)
     with col_f1:
@@ -832,7 +833,7 @@ elif module == "3. Monthly Decline Report (Waterfall)":
                 transactions.columns = transactions.columns.astype(str).str.strip()
                 blacklist.columns = blacklist.columns.astype(str).str.strip()
 
-                # --- STEP 1: WATERFALL ANALYSIS ---
+                # --- STEP 1: TRANSACTIONS WATERFALL ---
                 required_tx_cols = [
                     'action_type', 'payment_provider', 'date', 'state', 'email/domain',
                     'bin_country_code', 'user_country', 'merchant_country', 'ip_country',
@@ -849,15 +850,16 @@ elif module == "3. Monthly Decline Report (Waterfall)":
                 transactions['action_type'] = transactions['action_type'].astype(str).str.strip().str.lower()
                 transactions['date'] = pd.to_datetime(transactions['date'], utc=True, errors='coerce')
 
+                # Filter scope: purchases, excluding provider 521268264, for selected month
                 tx_scope = transactions[
                     (transactions['action_type'] == 'purchase') &
                     (transactions['payment_provider'] != 521268264)
                 ].copy()
                 
-                tx_scope = tx_scope[(tx_scope['date'].dt.year == yr) & (tx_scope['date'].dt.month == mn)]
+                tx_scope = tx_scope[(tx_scope['date'].dt.year == ANALYSIS_YEAR) & (tx_scope['date'].dt.month == ANALYSIS_MONTH)]
 
                 if tx_scope.empty:
-                    st.error(f"No purchase transactions found for {calendar.month_name[mn]} {yr} after excluding provider 521268264.")
+                    st.error(f"No purchase transactions found for {month_label} after excluding provider 521268264.")
                     st.stop()
 
                 step_1 = tx_scope[~tx_scope['email/domain'].astype(str).str.strip().str.lower().isin(EXCLUDED_DOMAINS)].copy()
@@ -870,39 +872,6 @@ elif module == "3. Monthly Decline Report (Waterfall)":
                 step_3 = label_consecutive_declines(step_2, timeframe_hours=0.25)
                 step_4 = step_3[~step_3['consecutive_decline']].copy()
 
-                # --- STEP 2: BLACKLIST & CLOSED ACCOUNTS EXTRACTION (WITH MONTH FILTER) ---
-                bl_work = blacklist.copy()
-                bl_date_col = next((c for c in bl_work.columns if c.lower() in ['created at', 'created_at', 'updated at', 'updated_at', 'date', 'timestamp', 'created']), None)
-
-                if bl_date_col:
-                    bl_work[bl_date_col] = pd.to_datetime(bl_work[bl_date_col], utc=True, errors='coerce')
-                    bl_month = bl_work[(bl_work[bl_date_col].dt.year == yr) & (bl_work[bl_date_col].dt.month == mn)].copy()
-                else:
-                    bl_month = bl_work.copy()
-
-                def numeric_ids(values):
-                    ids = set(values.dropna().astype(str).str.strip())
-                    return {value for value in ids if value.isdigit()}
-
-                user_id_rows = bl_month[bl_month['data field'].astype(str).str.strip().str.lower().eq('user_id')].copy()
-
-                updater_col = next((c for c in user_id_rows.columns if 'updated by' in c.lower() or 'assignee' in c.lower()), None)
-                if updater_col:
-                    closed_acc_df = user_id_rows[user_id_rows[updater_col].astype(str).str.strip().str.lower().isin([m.lower() for m in CLOSED_ACCOUNTS_MANAGERS])].copy()
-                else:
-                    closed_acc_df = user_id_rows.copy()
-
-                closed_acc_user_ids = numeric_ids(closed_acc_df['value'])
-
-                multi_acc_df = user_id_rows[
-                    user_id_rows['comment'].astype(str).str.contains('duplicate|active|Multi-acc', case=False, na=False)
-                ].copy()
-                multi_acc_user_ids = numeric_ids(multi_acc_df['value'])
-
-                clean_user_ids_list = sorted(closed_acc_user_ids - multi_acc_user_ids, key=int)
-                result_ids_str = ','.join(map(str, clean_user_ids_list))
-
-                # --- CALCULATE METRICS & NET TRUE POSITIVE SHARE ---
                 def pct(numerator, denominator):
                     return numerator / denominator * 100 if denominator else 0.0
 
@@ -916,47 +885,116 @@ elif module == "3. Monthly Decline Report (Waterfall)":
                 restricted_c, restricted_a = decline_count_rate(step_2), decline_amount_rate(step_2)
                 true_reject_c, true_reject_a = decline_count_rate(step_4), decline_amount_rate(step_4)
 
-                # Calculate Net True Positive Share
-                step_4_declines = step_4[step_4['state'] == 'DECLINE'].copy()
-                user_id_col = next((c for c in step_4_declines.columns if c.lower() in ['user_id', 'user id', 'user_id/value']), None)
+                restricted_impact_pp = raw_c - restricted_c
+                consecutive_impact_pp = restricted_c - true_reject_c
 
-                if user_id_col and clean_user_ids_list:
-                    step_4_declines['clean_user_id'] = pd.to_numeric(step_4_declines[user_id_col], errors='coerce')
-                    fraud_declines_count = step_4_declines['clean_user_id'].isin(clean_user_ids_list).sum()
-                    total_residual_declines = len(step_4_declines)
-                    net_tp_share = pct(fraud_declines_count, total_residual_declines)
-                else:
-                    net_tp_share = 0.0
+                business_summary = (
+                    f"{month_label} raw decline rate was {raw_c:.2f}%, "
+                    f"which includes {restricted_impact_pp:.2f}pp from sanctioned/restricted countries and "
+                    f"{consecutive_impact_pp:.2f}pp from consecutive-decline deduplication. "
+                    f"The remaining true reject rate was {true_reject_c:.2f}%."
+                )
 
-                metrics = {
-                    "raw_count_rate": raw_c,
-                    "raw_amount_rate": raw_a,
-                    "restricted_count_rate": restricted_c,
-                    "restricted_amount_rate": restricted_a,
-                    "true_reject_count_rate": true_reject_c,
-                    "true_reject_amount_rate": true_reject_a,
-                    "restricted_impact_pp": raw_c - restricted_c,
-                    "consecutive_decline_impact_pp": restricted_c - true_reject_c,
-                    "net_true_positive_share_pct": net_tp_share,
-                }
+                # --- STEP 2: BLACKLIST & NET TRUE POSITIVE MATCHING ---
+                required_bl_cols = ['data field', 'value', 'comment', 'last updated', 'last updated by']
+                missing_bl = [c for c in required_bl_cols if c not in blacklist.columns]
+                if missing_bl:
+                    st.error(f"SEON blacklist export missing required columns: {', '.join(missing_bl)}")
+                    st.stop()
 
-                reporting_table = pd.DataFrame([
-                    {'Description': '1. Raw Decline Rate Without Tests accounts', 'Count-based %': f'{metrics["raw_count_rate"]:.2f}%', 'Amount-based %': f'{metrics["raw_amount_rate"]:.2f}%'},
-                    {'Description': '2. Impact of Sanctioned/Restricted Countries Filter (pp)', 'Count-based %': f'{metrics["restricted_impact_pp"]:.2f}%', 'Amount-based %': '-'},
-                    {'Description': '3. Impact of Consecutive Declines Deduplication (pp)', 'Count-based %': f'{metrics["consecutive_decline_impact_pp"]:.2f}%', 'Amount-based %': '-'},
-                    {'Description': '3.1 True Reject Rate (Residual Declines)', 'Count-based %': f'{metrics["true_reject_count_rate"]:.2f}%', 'Amount-based %': f'{metrics["true_reject_amount_rate"]:.2f}%'},
-                    {'Description': '4. Net true positive reject share within residual declines', 'Count-based %': f'{metrics["net_true_positive_share_pct"]:.2f}%', 'Amount-based %': None},
+                # Parse last updated timestamp for month-filtering
+                blacklist['last updated_dt'] = pd.to_datetime(blacklist['last updated'], utc=True, errors='coerce', format='mixed')
+                
+                # Filter Blacklist strictly by selected month for Accounts analysis
+                blacklist_month = blacklist[
+                    (blacklist['last updated_dt'].dt.year == ANALYSIS_YEAR) & 
+                    (blacklist['last updated_dt'].dt.month == ANALYSIS_MONTH)
+                ].copy()
+
+                # Match Residual Declines against FULL SEON Blacklist (as in reference script)
+                step_4_month = step_4.copy()
+                
+                def tag_fraud_transactions_ref(data, bl_df_input):
+                    res = data.copy()
+                    res['is_fraud'] = False
+                    if bl_df_input.empty:
+                        return res
+                    grouped = bl_df_input[['data field', 'value']].dropna().groupby('data field')['value'].apply(
+                        lambda vals: set(vals.astype(str).str.strip())
+                    )
+                    for field, values in grouped.items():
+                        if field in res.columns:
+                            res.loc[res[field].astype(str).str.strip().isin(values), 'is_fraud'] = True
+                    return res
+
+                tagged_month = tag_fraud_transactions_ref(step_4_month, blacklist)
+                remaining_declines = tagged_month[tagged_month['state'] == 'DECLINE'].copy()
+                fraud_declines = remaining_declines[remaining_declines['is_fraud']].copy()
+                net_tp_share = pct(len(fraud_declines), len(remaining_declines))
+
+                # Build Waterfall Reporting Table
+                waterfall = pd.DataFrame([
+                    {'Description': 'Raw Decline Rate Without Tests accounts', 'Reject Rate (Count)': f'{raw_c:.2f}%'},
+                    {'Description': 'Sanctioned/Restricted Countries Filtered Out', 'Reject Rate (Count)': f'{restricted_impact_pp:.2f}%'},
+                    {'Description': 'Consecutive Declines Deduplication', 'Reject Rate (Count)': f'{consecutive_impact_pp:.2f}%'},
+                    {'Description': 'True Reject Rate', 'Reject Rate (Count)': f'{true_reject_c:.2f}%'},
+                    {'Description': 'Net True Positive Reject Rate', 'Reject Rate (Count)': f'{net_tp_share:.2f}%'},
+                    {'Description': business_summary, 'Reject Rate (Count)': ''},
                 ])
 
+                fraud_summary = pd.DataFrame([
+                    {'Metric': 'Residual declines after waterfall', 'Count': len(remaining_declines)},
+                    {'Metric': 'Residual declines matching SEON blacklist', 'Count': len(fraud_declines)},
+                    {'Metric': 'Net True Positive Reject Rate (% of residual declines)', 'Count': round(net_tp_share, 2)},
+                ])
+
+                # --- CLOSED ACCOUNTS & MULTI-ACCOUNTS (MONTHLY SCOPE) ---
+                def numeric_ids_ref(values):
+                    ids = set()
+                    for raw in values.dropna():
+                        value = str(raw).strip()
+                        if not value or value.lower() in {'nan', 'none', 'null'}:
+                            continue
+                        if value.endswith('.0') and value[:-2].isdigit():
+                            value = value[:-2]
+                        try:
+                            number = float(value)
+                            if number.is_integer() and number >= 0:
+                                value = str(int(number))
+                        except (TypeError, ValueError, OverflowError):
+                            pass
+                        if value.isdigit():
+                            ids.add(value)
+                    return ids
+
+                EMPLOYEE_NAMES = {'maryna krasheninnikova', 'serhii kryhin', 'oksana moskalenko', 'yevheniia linichenko'}
+                
+                monthly_field = blacklist_month['data field'].astype(str).str.strip().str.lower()
+                monthly_comment = blacklist_month['comment'].astype(str).fillna('').str.strip()
+                monthly_editor = blacklist_month['last updated by'].astype(str).str.strip().str.lower()
+
+                user_id_rows = blacklist_month[monthly_field == 'user_id'].copy()
+                closed_mask = monthly_editor.loc[user_id_rows.index].isin(EMPLOYEE_NAMES)
+                closed_acc_df = user_id_rows[closed_mask].copy()
+                closed_acc_user_ids = numeric_ids_ref(closed_acc_df['value'])
+
+                multi_mask = monthly_comment.loc[user_id_rows.index].str.contains(r'duplicate|active|multi[\s_-]*acc', case=False, regex=True, na=False)
+                multi_acc_df = user_id_rows[multi_mask].copy()
+                multi_acc_user_ids = numeric_ids_ref(multi_acc_df['value'])
+
+                clean_user_ids_list = sorted(closed_acc_user_ids - multi_acc_user_ids, key=int)
+                result_ids_str = ','.join(clean_user_ids_list)
+
                 account_summary = pd.DataFrame([
-                    {'Metric': f'Multi-accounts identified ({calendar.month_name[mn]})', 'Count': len(multi_acc_user_ids)},
-                    {'Metric': f'Closed-account IDs identified ({calendar.month_name[mn]})', 'Count': len(closed_acc_user_ids)},
-                    {'Metric': f'Closed-account IDs excluding multi-accounts ({calendar.month_name[mn]})', 'Count': len(clean_user_ids_list)},
+                    {'Metric': f'Multi-accounts identified in {month_label}', 'Count': len(multi_acc_user_ids)},
+                    {'Metric': f'Closed-account IDs identified in {month_label}', 'Count': len(closed_acc_user_ids)},
+                    {'Metric': 'Closed-account IDs excluding multi-accounts', 'Count': len(clean_user_ids_list)},
                 ])
 
                 # Save State in Session
                 st.session_state['m3_phase1_done'] = True
-                st.session_state['m3_reporting_table'] = reporting_table
+                st.session_state['m3_waterfall'] = waterfall
+                st.session_state['m3_fraud_summary'] = fraud_summary
                 st.session_state['m3_account_summary'] = account_summary
                 st.session_state['m3_clean_user_ids_list'] = clean_user_ids_list
                 st.session_state['m3_result_ids_str'] = result_ids_str
@@ -964,18 +1002,21 @@ elif module == "3. Monthly Decline Report (Waterfall)":
     # --- RENDER RESULTS & METABASE STEP ---
     if st.session_state.get('m3_phase1_done', False):
         st.markdown("---")
-        st.subheader(f"STEP 1 RESULTS · SEON TRANSACTIONS WATERFALL ({calendar.month_name[mn]} {yr})")
-        st.dataframe(st.session_state['m3_reporting_table'], use_container_width=True)
+        st.subheader(f"STEP 1 RESULTS · REPORTING TABLE — {month_label}")
+        st.dataframe(st.session_state['m3_waterfall'], use_container_width=True)
 
-        st.subheader(f"STEP 2 RESULTS · CLOSED ACCOUNTS & MULTI-ACCOUNTS ({calendar.month_name[mn]} {yr})")
+        st.subheader(f"BLACKLIST MATCH SUMMARY — {month_label}")
+        st.dataframe(st.session_state['m3_fraud_summary'], use_container_width=True)
+
+        st.subheader(f"STEP 2 RESULTS · CLOSED ACCOUNTS AND MULTI-ACCOUNTS — {month_label}")
         st.dataframe(st.session_state['m3_account_summary'], use_container_width=True)
 
         st.subheader("📋 USER IDS FOR METABASE QUERY (Copy below):")
-        st.code(st.session_state['m3_result_ids_str'] if st.session_state['m3_result_ids_str'] else "No eligible numeric user IDs found for selected month.", language="text")
+        st.code(st.session_state['m3_result_ids_str'] if st.session_state['m3_result_ids_str'] else "No eligible numeric user IDs found.", language="text")
 
         st.markdown("---")
-        st.subheader("2️⃣ STEP 3: Upload Metabase Export (After running query with IDs above)")
-        f3 = st.file_uploader("Upload 3/3: Metabase Transactions Export:", type=["xlsx", "csv"], key="m3_step2_f3")
+        st.subheader("2️⃣ STEP 3: Upload Metabase Export (Independent Metabase Query File)")
+        f3 = st.file_uploader("Upload 3/3: Metabase Export:", type=["xlsx", "csv"], key="m3_step2_f3")
 
         if f3 is not None:
             if st.button("💶 Process Metabase Volume & Finalize Report", type="primary"):
@@ -990,13 +1031,13 @@ elif module == "3. Monthly Decline Report (Waterfall)":
 
                     rates_to_eur = fetch_eur_rates()
 
-                    metabase_month = metabase.copy()
-                    metabase_month['pay_amount'] = pd.to_numeric(metabase_month['pay_amount'], errors='coerce').fillna(0)
-                    metabase_month['pay_currency'] = metabase_month['pay_currency'].astype(str).str.strip().str.upper()
+                    metabase_data = metabase.copy()
+                    metabase_data['pay_amount'] = pd.to_numeric(metabase_data['pay_amount'], errors='coerce').fillna(0)
+                    metabase_data['pay_currency'] = metabase_data['pay_currency'].astype(str).str.strip().str.upper()
 
-                    successful_topups = metabase_month[
-                        (metabase_month['status'].astype(str).str.strip().str.lower() == 'accepted') &
-                        (metabase_month['transaction_type'].astype(str).str.strip().str.upper() == 'TYPE_TOP_UP')
+                    successful_topups = metabase_data[
+                        (metabase_data['status'].astype(str).str.strip() == 'Accepted') &
+                        (metabase_data['transaction_type'].astype(str).str.strip() == 'TYPE_TOP_UP')
                     ].copy()
 
                     topup_summary = successful_topups.groupby('pay_currency', as_index=False)['pay_amount'].sum()
@@ -1009,23 +1050,26 @@ elif module == "3. Monthly Decline Report (Waterfall)":
                         {'Metric': 'Total top-up volume (EUR equivalent)', 'Value': f'{total_topup_eur:,.2f} EUR'},
                     ])
                     
-                    st.subheader(f"STEP 3 RESULTS · METABASE TOP-UP ANALYSIS ({calendar.month_name[mn]} {yr})")
+                    st.subheader(f"STEP 3 RESULTS · METABASE TOP-UPS — {month_label}")
                     st.dataframe(topup_overview, use_container_width=True)
                     st.write("#### Currency Breakdown:")
                     st.dataframe(topup_summary.sort_values('amount_eur', ascending=False), use_container_width=True)
 
                     # --- EXPORT FULL REPORT ---
+                    OUTPUT_FILE = f"SEON_Monthly_Analysis_{ANALYSIS_YEAR}_{ANALYSIS_MONTH:02d}.xlsx"
                     output_report = io.BytesIO()
                     with pd.ExcelWriter(output_report, engine="xlsxwriter") as writer:
-                        st.session_state['m3_reporting_table'].to_excel(writer, sheet_name="Waterfall Summary", index=False)
-                        st.session_state['m3_account_summary'].to_excel(writer, sheet_name="Account Classification", index=False)
-                        pd.DataFrame({"Clean_Closed_User_IDs": sorted(st.session_state['m3_clean_user_ids_list'])}).to_excel(writer, sheet_name="Clean User IDs", index=False)
-                        topup_summary.to_excel(writer, sheet_name="Metabase Top-Up Volumes", index=False)
+                        st.session_state['m3_waterfall'].to_excel(writer, sheet_name="Waterfall", index=False)
+                        st.session_state['m3_fraud_summary'].to_excel(writer, sheet_name="Blacklist Match", index=False)
+                        st.session_state['m3_account_summary'].to_excel(writer, sheet_name="Accounts Summary", index=False)
+                        pd.DataFrame({"user_id": st.session_state['m3_clean_user_ids_list']}).to_excel(writer, sheet_name="Eligible User IDs", index=False)
+                        topup_overview.to_excel(writer, sheet_name="Topups Summary", index=False)
+                        topup_summary.to_excel(writer, sheet_name="Topups by Currency", index=False)
 
                     st.download_button(
                         label="📥 Download Complete Monthly Analysis Report (Excel)",
                         data=output_report.getvalue(),
-                        file_name=f"FinCrime_Monthly_Statistic_{yr}_{mn}.xlsx",
+                        file_name=OUTPUT_FILE,
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                     )
                     
