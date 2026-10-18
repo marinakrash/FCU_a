@@ -855,31 +855,43 @@ elif module == "2. Acquiring Monitoring":
                             
     elif sub_module == "2.2 Single Merchant Historical Analysis":
         st.title("🔍 Single Merchant Deep Analysis")
-        up_file = st.file_uploader("Upload SEON Acquiring Export:", type=["xlsx", "csv"])
+        st.write("Historical decline trends, country distributions, top rule triggers, and comprehensive email profiling.")
+        
+        up_file = st.file_uploader("Upload SEON Acquiring Export (XLSX/CSV):", type=["xlsx", "csv"], key="m22_upload")
         if up_file:
             df = load_data(up_file)
             
-            CARD_COUNTRY_COL = "bin_country_code" if "bin_country_code" in df.columns else "card_country"
-            IP_COUNTRY_COL = "ip_country"
-            EMAIL_COL = "email/email"
+            # Auto-detect key columns
+            CARD_COUNTRY_COL = "bin_country_code" if "bin_country_code" in df.columns else ("card_country" if "card_country" in df.columns else "country")
+            IP_COUNTRY_COL = "ip_country" if "ip_country" in df.columns else "ipcountry"
+            EMAIL_COL = "email/email" if "email/email" in df.columns else ("email/raw_email" if "email/raw_email" in df.columns else "email")
+            CARD_HASH_COL = "card_hash" if "card_hash" in df.columns else "card_hash"
+            CARDHOLDER_COL = "card_fullname" if "card_fullname" in df.columns else "user_fullname"
+            STATUS_3D_COL = "status_3d" if "status_3d" in df.columns else "3d_status"
+            SCORE_COL = "fraud_score" if "fraud_score" in df.columns else "score"
+            TAGS_COL = "tags" if "tags" in df.columns else "tags"
+            DETAILS_URL_COL = "details_url" if "details_url" in df.columns else "url"
             
-            df["date"] = pd.to_datetime(df["date"], errors="coerce", utc=True).dt.tz_convert(None).dt.normalize()
-            df = df.dropna(subset=["merchant_id", "date"]).copy()
+            df["_date_dt"] = pd.to_datetime(df["date"], errors="coerce", utc=True).dt.tz_convert(None)
+            df["_date_day"] = df["_date_dt"].dt.normalize()
+            
+            df = df.dropna(subset=["merchant_id", "_date_day"]).copy()
             df["merchant_id"] = df["merchant_id"].astype(str).str.strip()
-            df["state"] = df["state"].astype(str).str.strip().str.upper()
+            df["state"] = df["state"].fillna("").astype(str).str.strip().str.upper()
             
             unique_merchants = sorted(df["merchant_id"].unique())
-            selected_m = st.selectbox("Select Merchant ID to Analyze:", unique_merchants)
+            selected_m = st.selectbox("Select Merchant ID to Analyze:", unique_merchants, key="m22_select_merchant")
             
             merchant_df = df[df["merchant_id"] == selected_m].copy()
             merchant_df["is_decline"] = merchant_df["state"].eq("DECLINE")
             merchant_df["is_approve"] = merchant_df["state"].eq("APPROVE")
             
-            daily = merchant_df.groupby("date").agg(
+            # --- 1. HISTORICAL DECLINE TREND ---
+            daily = merchant_df.groupby("_date_day").agg(
                 total_transactions=("state", "size"),
                 declined_transactions=("is_decline", "sum"),
                 approved_transactions=("is_approve", "sum")
-            ).reset_index().sort_values("date")
+            ).reset_index().sort_values("_date_day")
             
             daily["decline_rate_pct"] = (daily["declined_transactions"] / daily["total_transactions"]) * 100
             active_daily = daily[daily["total_transactions"] > 0].copy()
@@ -888,59 +900,210 @@ elif module == "2. Acquiring Monitoring":
             daily["decline_change_pct"] = daily["decline_rate_pct"].apply(lambda x: relative_change(x, decline_baseline))
             daily["decline_spike"] = (daily["decline_rate_pct"] >= 6.0) & (daily["decline_change_pct"] >= 50.0)
             
-            fig = px.line(daily, x="date", y="decline_rate_pct", title=f"Historical Decline Rate — Merchant: {selected_m}")
-            fig.add_hline(y=decline_baseline, line_dash="dash", line_color="green", annotation_text=f"Baseline ({decline_baseline:.2f}%)")
-            fig.add_hline(y=6.0, line_dash="dot", line_color="red", annotation_text="Min 6%")
-            st.plotly_chart(fig, use_container_width=True)
+            fig_trend = px.line(daily, x="_date_day", y="decline_rate_pct", title=f"Historical Decline Rate — Merchant: {selected_m}")
+            fig_trend.add_hline(y=decline_baseline, line_dash="dash", line_color="green", annotation_text=f"Baseline ({decline_baseline:.2f}%)")
+            fig_trend.add_hline(y=6.0, line_dash="dot", line_color="red", annotation_text="Min 6%")
+            st.plotly_chart(fig_trend, use_container_width=True)
             
-            # --- TOP RULE TRIGGER RATIO SPIKES (TOP 5) ---
-            st.subheader("📌 Top 5 Rule Trigger Ratio Spikes")
-            rule_source = merchant_df[["date", "state", "applied_rule_ids"]].copy() if "applied_rule_ids" in merchant_df.columns else pd.DataFrame()
+            # --- 2. COUNTRY DISTRIBUTION PIE CHARTS ---
+            st.subheader("🥧 Country Distributions (Pie Charts)")
+            col_pie1, col_pie2 = st.columns(2)
+            
+            with col_pie1:
+                if CARD_COUNTRY_COL in merchant_df.columns:
+                    card_c_counts = merchant_df[CARD_COUNTRY_COL].fillna("Unknown").astype(str).str.upper().value_counts().reset_index()
+                    card_c_counts.columns = ["Card Country", "Transactions"]
+                    fig_card_pie = px.pie(
+                        card_c_counts, 
+                        names="Card Country", 
+                        values="Transactions", 
+                        title="💳 Card Country Breakdown",
+                        hole=0.3
+                    )
+                    fig_card_pie.update_traces(textposition='inside', textinfo='percent+label+value')
+                    st.plotly_chart(fig_card_pie, use_container_width=True)
+                else:
+                    st.info("Card Country column not found for Pie Chart.")
+                    
+            with col_pie2:
+                if IP_COUNTRY_COL in merchant_df.columns:
+                    ip_c_counts = merchant_df[IP_COUNTRY_COL].fillna("Unknown").astype(str).str.upper().value_counts().reset_index()
+                    ip_c_counts.columns = ["IP Country", "Transactions"]
+                    fig_ip_pie = px.pie(
+                        ip_c_counts, 
+                        names="IP Country", 
+                        values="Transactions", 
+                        title="🌐 IP Country Breakdown",
+                        hole=0.3
+                    )
+                    fig_ip_pie.update_traces(textposition='inside', textinfo='percent+label+value')
+                    st.plotly_chart(fig_ip_pie, use_container_width=True)
+                else:
+                    st.info("IP Country column not found for Pie Chart.")
+
+            # --- 3. TOP RULE TRIGGER RATIO SPIKES (TOP 5 ON DECLINES) ---
+            st.subheader("📌 Top 5 Triggered Rules on Declines")
+            rule_source = merchant_df[["_date_day", "state", "applied_rule_ids"]].copy() if "applied_rule_ids" in merchant_df.columns else pd.DataFrame()
             if not rule_source.empty:
                 rule_source["rule_id"] = rule_source["applied_rule_ids"].apply(parse_rule_ids)
                 rule_long = rule_source.explode("rule_id").dropna(subset=["rule_id"]).copy()
-                rule_long["is_decline"] = rule_long["state"].eq("DECLINE")
                 
-                rule_daily = rule_long.groupby(["date", "rule_id"]).agg(
-                    rule_trigger_count=("state", "size"),
-                    rule_declined_count=("is_decline", "sum")
-                ).reset_index()
-                
-                rule_daily["rule_name"] = rule_daily["rule_id"].apply(get_rule_name)
-                rule_summary = rule_daily.groupby(["rule_id", "rule_name"])["rule_trigger_count"].sum().nlargest(5).reset_index()
-                st.dataframe(rule_summary, use_container_width=True)
-            
-            # --- HEATMAP: CARD VS IP COUNTRY ---
-            if CARD_COUNTRY_COL in merchant_df.columns and IP_COUNTRY_COL in merchant_df.columns:
-                st.subheader("🌐 Card Country vs IP Country Matrix (Top 10)")
-                ct = pd.crosstab(merchant_df[CARD_COUNTRY_COL].fillna("Unknown"), merchant_df[IP_COUNTRY_COL].fillna("Unknown"))
-                top_cards = merchant_df[CARD_COUNTRY_COL].fillna("Unknown").value_counts().head(10).index
-                top_ips = merchant_df[IP_COUNTRY_COL].fillna("Unknown").value_counts().head(10).index
-                ct_filtered = ct.loc[ct.index.isin(top_cards), ct.columns.isin(top_ips)]
-                
-                fig_hm = px.imshow(ct_filtered, text_auto=True, color_continuous_scale="YlGnBu", title="Country Cross-Analysis Matrix")
-                st.plotly_chart(fig_hm, use_container_width=True)
-            
-            # --- TOP PAYER EMAILS DURING LATEST DECLINE SPIKE ---
-            spike_dates = daily.loc[daily["decline_spike"], "date"].dropna()
-            if not spike_dates.empty:
-                st.subheader("✉️ Top Payer Emails During Latest Spike")
-                latest_spike = spike_dates.max()
-                spike_tx = merchant_df[(merchant_df["date"] == latest_spike) & (merchant_df["state"] == "DECLINE")]
-                if EMAIL_COL in spike_tx.columns:
-                    top_emails = spike_tx[EMAIL_COL].value_counts().head(10).reset_index()
-                    top_emails.columns = ["Email", "Declined Transactions"]
-                    st.dataframe(top_emails, use_container_width=True)
+                rule_long_declines = rule_long[rule_long["state"].eq("DECLINE")].copy()
+                if not rule_long_declines.empty:
+                    rule_daily = rule_long_declines.groupby(["_date_day", "rule_id"]).agg(
+                        rule_declined_count=("state", "size")
+                    ).reset_index()
+                    
+                    rule_daily["rule_name"] = rule_daily["rule_id"].apply(get_rule_name)
+                    
+                    rule_summary = (
+                        rule_daily.groupby(["rule_id", "rule_name"])["rule_declined_count"]
+                        .sum()
+                        .nlargest(5)
+                        .reset_index()
+                        .rename(columns={"rule_declined_count": "declined_triggers_count"})
+                    )
+                    st.dataframe(rule_summary, use_container_width=True)
+                else:
+                    st.info("No rule triggers found on declined transactions for this merchant.")
 
+            # --- 4. HEATMAPS: OVERALL VS DECLINES ONLY ---
+            if CARD_COUNTRY_COL in merchant_df.columns and IP_COUNTRY_COL in merchant_df.columns:
+                st.subheader("🌐 Card Country vs IP Country Heatmaps")
+                col_hm1, col_hm2 = st.columns(2)
+                
+                with col_hm1:
+                    ct_all = pd.crosstab(merchant_df[CARD_COUNTRY_COL].fillna("Unknown"), merchant_df[IP_COUNTRY_COL].fillna("Unknown"))
+                    top_cards_all = merchant_df[CARD_COUNTRY_COL].fillna("Unknown").value_counts().head(10).index
+                    top_ips_all = merchant_df[IP_COUNTRY_COL].fillna("Unknown").value_counts().head(10).index
+                    ct_filtered_all = ct_all.loc[ct_all.index.isin(top_cards_all), ct_all.columns.isin(top_ips_all)]
+                    
+                    if not ct_filtered_all.empty:
+                        fig_hm_all = px.imshow(ct_filtered_all, text_auto=True, color_continuous_scale="YlGnBu", title="Overall Matrix (All Transactions)")
+                        st.plotly_chart(fig_hm_all, use_container_width=True)
+
+                with col_hm2:
+                    merchant_declines_df = merchant_df[merchant_df["state"].eq("DECLINE")].copy()
+                    if not merchant_declines_df.empty:
+                        ct_dec = pd.crosstab(merchant_declines_df[CARD_COUNTRY_COL].fillna("Unknown"), merchant_declines_df[IP_COUNTRY_COL].fillna("Unknown"))
+                        top_cards_dec = merchant_declines_df[CARD_COUNTRY_COL].fillna("Unknown").value_counts().head(10).index
+                        top_ips_dec = merchant_declines_df[IP_COUNTRY_COL].fillna("Unknown").value_counts().head(10).index
+                        ct_filtered_dec = ct_dec.loc[ct_dec.index.isin(top_cards_dec), ct_dec.columns.isin(top_ips_dec)]
+                        
+                        if not ct_filtered_dec.empty:
+                            fig_hm_dec = px.imshow(ct_filtered_dec, text_auto=True, color_continuous_scale="Reds", title="Declines Only Matrix")
+                            st.plotly_chart(fig_hm_dec, use_container_width=True)
+
+            # --- 5. ENHANCED EMAIL DEEP ANALYTICS ---
+            st.subheader("✉️ Enhanced Email Analytics (Declines Profiling)")
+            
+            if EMAIL_COL in merchant_df.columns:
+                # Get emails with declines for this merchant
+                m_decline_emails = set(
+                    merchant_df[merchant_df["state"].eq("DECLINE")][EMAIL_COL].dropna().astype(str).str.strip().unique()
+                )
+                
+                if m_decline_emails:
+                    # Map cards to emails across the merchant dataset to detect shared cards
+                    card_email_map = {}
+                    if CARD_HASH_COL in merchant_df.columns:
+                        card_email_map = (
+                            merchant_df.groupby(CARD_HASH_COL)[EMAIL_COL]
+                            .apply(lambda x: sorted(set(x.dropna().astype(str).str.strip())))
+                            .to_dict()
+                        )
+
+                    email_rows = []
+                    for email_val in sorted(m_decline_emails):
+                        e_df = merchant_df[merchant_df[EMAIL_COL].astype(str).str.strip() == email_val].copy()
+
+                        total_tx = len(e_df)
+                        successful_tx = int((e_df["state"] == "APPROVE").sum())
+                        declined_tx = int((e_df["state"] == "DECLINE").sum())
+
+                        # IP Countries
+                        ip_countries = sorted(e_df[IP_COUNTRY_COL].dropna().astype(str).str.upper().unique()) if IP_COUNTRY_COL in e_df.columns else []
+                        
+                        # Cards & Countries
+                        card_hashes = sorted(e_df[CARD_HASH_COL].dropna().astype(str).unique()) if CARD_HASH_COL in e_df.columns else []
+                        card_countries = sorted(e_df[CARD_COUNTRY_COL].dropna().astype(str).str.upper().unique()) if CARD_COUNTRY_COL in e_df.columns else []
+                        
+                        # Cardholders
+                        cardholders = sorted(e_df[CARDHOLDER_COL].dropna().astype(str).unique()) if CARDHOLDER_COL in e_df.columns else []
+
+                        # 3DS Failures (status_3d == 'N' and fraud_score < 30)
+                        failed_3ds_count = 0
+                        if STATUS_3D_COL in e_df.columns and SCORE_COL in e_df.columns:
+                            failed_3ds_count = int(len(
+                                e_df[
+                                    (e_df[STATUS_3D_COL].fillna("").astype(str).str.upper() == "N") &
+                                    (pd.to_numeric(e_df[SCORE_COL], errors="coerce") < 30)
+                                ]
+                            ))
+                        has_3ds_failed = "Y" if failed_3ds_count > 0 else "N"
+
+                        # Failed Status in Tags
+                        failed_tags_count = 0
+                        if TAGS_COL in e_df.columns:
+                            failed_tags_count = int(len(
+                                e_df[e_df[TAGS_COL].fillna("").astype(str).str.lower().str.contains("transaction_status failed", regex=False)]
+                            ))
+
+                        # First Decline Details URL
+                        first_url = ""
+                        if DETAILS_URL_COL in e_df.columns:
+                            e_declines = e_df[e_df["state"] == "DECLINE"].sort_values("_date_dt")
+                            if not e_declines.empty:
+                                first_url = str(e_declines[DETAILS_URL_COL].iloc[0])
+
+                        # Shared Cards Check
+                        shared_cards_count = 0
+                        shared_emails = set()
+                        for card in card_hashes:
+                            other_emails = set(card_email_map.get(card, []))
+                            other_emails.discard(email_val)
+                            if len(other_emails) > 0:
+                                shared_cards_count += 1
+                                shared_emails.update(other_emails)
+
+                        has_shared_cards = "Y" if shared_cards_count > 0 else "N"
+
+                        email_rows.append({
+                            "Email": email_val,
+                            "Total Tx": total_tx,
+                            "Successful (Approve)": successful_tx,
+                            "Declined": declined_tx,
+                            "3DS Failed (Y/N)": has_3ds_failed,
+                            "3DS Failed Count": failed_3ds_count,
+                            "Failed Status (Tags)": failed_tags_count,
+                            "Unique Cards": len(card_hashes),
+                            "Card Countries": ", ".join(card_countries) if card_countries else "Unknown",
+                            "IP Countries": ", ".join(ip_countries) if ip_countries else "Unknown",
+                            "Cardholder Names": ", ".join(cardholders) if cardholders else "Unknown",
+                            "Has Shared Cards": has_shared_cards,
+                            "Shared Cards Count": shared_cards_count,
+                            "Shared With Emails": ", ".join(sorted(shared_emails)) if shared_emails else "None",
+                            "First Decline Details URL": first_url
+                        })
+
+                    emails_analytics_df = pd.DataFrame(email_rows).sort_values("Declined", ascending=False)
+                    st.dataframe(emails_analytics_df, use_container_width=True)
+                else:
+                    st.info("No emails with decline transactions found for this merchant.")
+
+            # --- EXPORT REPORT ---
             output_merchant = io.BytesIO()
             with pd.ExcelWriter(output_merchant, engine="xlsxwriter") as writer:
                 daily.to_excel(writer, sheet_name="Daily Merchant Metrics", index=False)
                 if 'rule_summary' in locals():
-                    rule_summary.to_excel(writer, sheet_name="Top 5 Rule Spikes", index=False)
+                    rule_summary.to_excel(writer, sheet_name="Top 5 Rule Spikes Declines", index=False)
+                if 'emails_analytics_df' in locals() and not emails_analytics_df.empty:
+                    emails_analytics_df.to_excel(writer, sheet_name="Email Deep Profiling", index=False)
+
             st.download_button(
                 label=f"📥 Download Deep Analysis Report ({selected_m})",
                 data=output_merchant.getvalue(),
-                file_name=f"SEON_Analysis_{selected_m}.xlsx",
+                file_name=f"SEON_Merchant_Analysis_{selected_m}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
 
