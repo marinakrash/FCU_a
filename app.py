@@ -888,26 +888,23 @@ elif module == "2. Acquiring Monitoring":
             
             df = df.dropna(subset=["merchant_id", "_date_day"]).copy()
             df["merchant_id"] = df["merchant_id"].astype(str).str.strip()
+            df["state"] = df["state"].fillna("").astype(str).str.strip().str.upper()
             
-            # Custom Success logic based on tags containing "RC 00"
-            if TAGS_COL in df.columns:
-                df["_is_success"] = df[TAGS_COL].fillna("").astype(str).str.upper().str.contains(r"RC\s*00", regex=True)
-            else:
-                df["_is_success"] = df["state"].fillna("").astype(str).str.strip().str.upper().eq("APPROVE")
-                
-            df["_is_decline"] = ~df["_is_success"]
-            df["state_clean"] = np.where(df["_is_success"], "APPROVE", "DECLINE")
+            # Pure State-Based Logic for Overall Metrics & Decline Rate
+            merchant_df_all = df.copy()
+            merchant_df_all["is_decline"] = merchant_df_all["state"].eq("DECLINE")
+            merchant_df_all["is_approve"] = merchant_df_all["state"].eq("APPROVE")
             
-            unique_merchants = sorted(df["merchant_id"].unique())
+            unique_merchants = sorted(merchant_df_all["merchant_id"].unique())
             selected_m = st.selectbox("Select Merchant ID to Analyze:", unique_merchants, key="m22_select_merchant")
             
-            merchant_df = df[df["merchant_id"] == selected_m].copy()
+            merchant_df = merchant_df_all[merchant_df_all["merchant_id"] == selected_m].copy()
             
-            # --- 1. HISTORICAL DECLINE TREND ---
+            # --- 1. HISTORICAL DECLINE TREND (Standard State-Based Calculation) ---
             daily = merchant_df.groupby("_date_day").agg(
-                total_transactions=("state_clean", "size"),
-                declined_transactions=("_is_decline", "sum"),
-                approved_transactions=("_is_success", "sum")
+                total_transactions=("state", "size"),
+                declined_transactions=("is_decline", "sum"),
+                approved_transactions=("is_approve", "sum")
             ).reset_index().sort_values("_date_day")
             
             daily["decline_rate_pct"] = (daily["declined_transactions"] / daily["total_transactions"]) * 100
@@ -960,15 +957,15 @@ elif module == "2. Acquiring Monitoring":
 
             # --- 3. TOP RULE TRIGGER RATIO SPIKES (TOP 5 ON DECLINES) ---
             st.subheader("📌 Top 5 Triggered Rules on Declines")
-            rule_source = merchant_df[["_date_day", "_is_decline", "applied_rule_ids"]].copy() if "applied_rule_ids" in merchant_df.columns else pd.DataFrame()
+            rule_source = merchant_df[["_date_day", "is_decline", "applied_rule_ids"]].copy() if "applied_rule_ids" in merchant_df.columns else pd.DataFrame()
             if not rule_source.empty:
                 rule_source["rule_id"] = rule_source["applied_rule_ids"].apply(parse_rule_ids)
                 rule_long = rule_source.explode("rule_id").dropna(subset=["rule_id"]).copy()
                 
-                rule_long_declines = rule_long[rule_long["_is_decline"]].copy()
+                rule_long_declines = rule_long[rule_long["is_decline"]].copy()
                 if not rule_long_declines.empty:
                     rule_daily = rule_long_declines.groupby(["_date_day", "rule_id"]).agg(
-                        rule_declined_count=("_is_decline", "size")
+                        rule_declined_count=("is_decline", "size")
                     ).reset_index()
                     
                     rule_daily["rule_name"] = rule_daily["rule_id"].apply(get_rule_name)
@@ -1000,7 +997,7 @@ elif module == "2. Acquiring Monitoring":
                         st.plotly_chart(fig_hm_all, use_container_width=True)
 
                 with col_hm2:
-                    merchant_declines_df = merchant_df[merchant_df["_is_decline"]].copy()
+                    merchant_declines_df = merchant_df[merchant_df["is_decline"]].copy()
                     if not merchant_declines_df.empty:
                         ct_dec = pd.crosstab(merchant_declines_df[CARD_COUNTRY_COL].fillna("Unknown"), merchant_declines_df[IP_COUNTRY_COL].fillna("Unknown"))
                         top_cards_dec = merchant_declines_df[CARD_COUNTRY_COL].fillna("Unknown").value_counts().head(10).index
@@ -1011,12 +1008,12 @@ elif module == "2. Acquiring Monitoring":
                             fig_hm_dec = px.imshow(ct_filtered_dec, text_auto=True, color_continuous_scale="Reds", title="Declines Only Matrix")
                             st.plotly_chart(fig_hm_dec, use_container_width=True)
 
-            # --- 5. ENHANCED EMAIL DEEP ANALYTICS ---
+            # --- 5. ENHANCED EMAIL DEEP ANALYTICS (Tag-based Analysis Strictly Here) ---
             st.subheader("✉️ Enhanced Email Analytics (Declines Profiling)")
             
             if EMAIL_COL in merchant_df.columns:
                 m_decline_emails = set(
-                    merchant_df[merchant_df["_is_decline"]][EMAIL_COL].dropna().astype(str).str.strip().unique()
+                    merchant_df[merchant_df["is_decline"]][EMAIL_COL].dropna().astype(str).str.strip().unique()
                 )
                 
                 if m_decline_emails:
@@ -1033,8 +1030,14 @@ elif module == "2. Acquiring Monitoring":
                         e_df = merchant_df[merchant_df[EMAIL_COL].astype(str).str.strip() == email_val].copy()
 
                         total_tx = len(e_df)
-                        successful_tx = int(e_df["_is_success"].sum())
-                        declined_tx = int(e_df["_is_decline"].sum())
+                        
+                        # Custom Success check strictly for email table profiling
+                        if TAGS_COL in e_df.columns:
+                            successful_tx = int(e_df[TAGS_COL].fillna("").astype(str).str.upper().str.contains(r"RC\s*00", regex=True).sum())
+                        else:
+                            successful_tx = int(e_df["state"].eq("APPROVE").sum())
+                            
+                        declined_tx = total_tx - successful_tx
 
                         # IP Countries
                         ip_countries = sorted(e_df[IP_COUNTRY_COL].dropna().astype(str).str.upper().unique()) if IP_COUNTRY_COL in e_df.columns else []
@@ -1111,7 +1114,6 @@ elif module == "2. Acquiring Monitoring":
                 file_name=f"SEON_Merchant_Analysis_{selected_m}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
-
 # ============================================================
 # MODULE 3: MONTHLY TOP-UP DECLINE REPORT
 # ============================================================
