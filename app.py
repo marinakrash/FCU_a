@@ -679,6 +679,7 @@ elif module == "2. Acquiring Monitoring":
                 if st.button("⚡ Run Deep Analysis for Selected Merchants", type="primary", key="m21_run_deep"):
                     with st.spinner("Processing deep analytics, rule triggers, top emails, and geo matrices..."):
                         rule_results, coverage_results, email_results, selected_spike_rows = [], [], [], []
+                        geo_figures = []
                         zip_buffer = io.BytesIO()
 
                         with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
@@ -774,7 +775,7 @@ elif module == "2. Acquiring Monitoring":
                                     plt.close(fig)
                                     zip_file.writestr(f"merchant_{safe_id}_top_rules.png", img_buf.getvalue())
 
-                                # 4. Generate Card Country vs IP Country Heatmap for ZIP Export
+                                # 4. Generate Card Country vs IP Country Heatmap for Display and ZIP Export
                                 if card_col and ip_col and card_col in m_spike_declines.columns and ip_col in m_spike_declines.columns:
                                     ct = pd.crosstab(
                                         m_spike_declines[card_col].replace("", np.nan).fillna("Unknown"),
@@ -787,7 +788,7 @@ elif module == "2. Acquiring Monitoring":
                                         ct_filtered = ct.loc[ct.index.isin(top_cards), ct.columns.isin(top_ips)]
 
                                         if not ct_filtered.empty:
-                                            fig_hm, ax_hm = plt.subplots(figsize=(9, 7))
+                                            fig_hm, ax_hm = plt.subplots(figsize=(8, 6))
                                             sns.heatmap(ct_filtered, annot=True, fmt="d", cmap="YlGnBu", cbar=True, ax=ax_hm)
                                             ax_hm.set_title(f"Card Country vs IP Country Heatmap (Spike Declines)\nMerchant: {m_name} | ID: {sel_id}")
                                             ax_hm.set_xlabel("IP Country")
@@ -796,8 +797,10 @@ elif module == "2. Acquiring Monitoring":
 
                                             geo_buf = io.BytesIO()
                                             plt.savefig(geo_buf, format="png", dpi=150)
-                                            plt.close(fig_hm)
                                             zip_file.writestr(f"merchant_{safe_id}_geo_matrix.png", geo_buf.getvalue())
+                                            
+                                            # Keep figure for direct rendering in Streamlit page
+                                            geo_figures.append((m_name, sel_id, fig_hm))
 
                         zip_buffer.seek(0)
 
@@ -815,6 +818,13 @@ elif module == "2. Acquiring Monitoring":
                         if not deep_emails_df.empty:
                             st.write("#### ✉️ Top Declined Payer Emails Preview")
                             st.dataframe(deep_emails_df, use_container_width=True)
+
+                        # Render Card Country vs IP Country Heatmaps directly on Streamlit Page
+                        if geo_figures:
+                            st.write("#### 🌐 Card Country vs IP Country Heatmaps")
+                            for m_name_f, m_id_f, fig_f in geo_figures:
+                                st.pyplot(fig_f)
+                                plt.close(fig_f)
 
                         col_dl1, col_dl2 = st.columns(2)
                         with col_dl1:
