@@ -865,32 +865,49 @@ elif module == "2. Acquiring Monitoring":
             CARD_COUNTRY_COL = "bin_country_code" if "bin_country_code" in df.columns else ("card_country" if "card_country" in df.columns else "country")
             IP_COUNTRY_COL = "ip_country" if "ip_country" in df.columns else "ipcountry"
             EMAIL_COL = "email/email" if "email/email" in df.columns else ("email/raw_email" if "email/raw_email" in df.columns else "email")
-            CARD_HASH_COL = "card_hash" if "card_hash" in df.columns else "card_hash"
+            
+            # Prioritize last4 for card identification, fall back to card_hash
+            if "card_last_4" in df.columns:
+                CARD_IDENTIFIER_COL = "card_last_4"
+            elif "last_4" in df.columns:
+                CARD_IDENTIFIER_COL = "last_4"
+            elif "card_last4" in df.columns:
+                CARD_IDENTIFIER_COL = "card_last4"
+            elif "card_hash" in df.columns:
+                CARD_IDENTIFIER_COL = "card_hash"
+            else:
+                CARD_IDENTIFIER_COL = "bin_country_code"
+
             CARDHOLDER_COL = "card_fullname" if "card_fullname" in df.columns else "user_fullname"
             STATUS_3D_COL = "status_3d" if "status_3d" in df.columns else "3d_status"
             SCORE_COL = "fraud_score" if "fraud_score" in df.columns else "score"
             TAGS_COL = "tags" if "tags" in df.columns else "tags"
-            DETAILS_URL_COL = "details_url" if "details_url" in df.columns else "url"
             
             df["_date_dt"] = pd.to_datetime(df["date"], errors="coerce", utc=True).dt.tz_convert(None)
             df["_date_day"] = df["_date_dt"].dt.normalize()
             
             df = df.dropna(subset=["merchant_id", "_date_day"]).copy()
             df["merchant_id"] = df["merchant_id"].astype(str).str.strip()
-            df["state"] = df["state"].fillna("").astype(str).str.strip().str.upper()
+            
+            # Custom Success logic based on tags containing "RC 00"
+            if TAGS_COL in df.columns:
+                df["_is_success"] = df[TAGS_COL].fillna("").astype(str).str.upper().str.contains(r"RC\s*00", regex=True)
+            else:
+                df["_is_success"] = df["state"].fillna("").astype(str).str.strip().str.upper().eq("APPROVE")
+                
+            df["_is_decline"] = ~df["_is_success"]
+            df["state_clean"] = np.where(df["_is_success"], "APPROVE", "DECLINE")
             
             unique_merchants = sorted(df["merchant_id"].unique())
             selected_m = st.selectbox("Select Merchant ID to Analyze:", unique_merchants, key="m22_select_merchant")
             
             merchant_df = df[df["merchant_id"] == selected_m].copy()
-            merchant_df["is_decline"] = merchant_df["state"].eq("DECLINE")
-            merchant_df["is_approve"] = merchant_df["state"].eq("APPROVE")
             
             # --- 1. HISTORICAL DECLINE TREND ---
             daily = merchant_df.groupby("_date_day").agg(
-                total_transactions=("state", "size"),
-                declined_transactions=("is_decline", "sum"),
-                approved_transactions=("is_approve", "sum")
+                total_transactions=("state_clean", "size"),
+                declined_transactions=("_is_decline", "sum"),
+                approved_transactions=("_is_success", "sum")
             ).reset_index().sort_values("_date_day")
             
             daily["decline_rate_pct"] = (daily["declined_transactions"] / daily["total_transactions"]) * 100
@@ -943,15 +960,15 @@ elif module == "2. Acquiring Monitoring":
 
             # --- 3. TOP RULE TRIGGER RATIO SPIKES (TOP 5 ON DECLINES) ---
             st.subheader("📌 Top 5 Triggered Rules on Declines")
-            rule_source = merchant_df[["_date_day", "state", "applied_rule_ids"]].copy() if "applied_rule_ids" in merchant_df.columns else pd.DataFrame()
+            rule_source = merchant_df[["_date_day", "_is_decline", "applied_rule_ids"]].copy() if "applied_rule_ids" in merchant_df.columns else pd.DataFrame()
             if not rule_source.empty:
                 rule_source["rule_id"] = rule_source["applied_rule_ids"].apply(parse_rule_ids)
                 rule_long = rule_source.explode("rule_id").dropna(subset=["rule_id"]).copy()
                 
-                rule_long_declines = rule_long[rule_long["state"].eq("DECLINE")].copy()
+                rule_long_declines = rule_long[rule_long["_is_decline"]].copy()
                 if not rule_long_declines.empty:
                     rule_daily = rule_long_declines.groupby(["_date_day", "rule_id"]).agg(
-                        rule_declined_count=("state", "size")
+                        rule_declined_count=("_is_decline", "size")
                     ).reset_index()
                     
                     rule_daily["rule_name"] = rule_daily["rule_id"].apply(get_rule_name)
@@ -983,7 +1000,7 @@ elif module == "2. Acquiring Monitoring":
                         st.plotly_chart(fig_hm_all, use_container_width=True)
 
                 with col_hm2:
-                    merchant_declines_df = merchant_df[merchant_df["state"].eq("DECLINE")].copy()
+                    merchant_declines_df = merchant_df[merchant_df["_is_decline"]].copy()
                     if not merchant_declines_df.empty:
                         ct_dec = pd.crosstab(merchant_declines_df[CARD_COUNTRY_COL].fillna("Unknown"), merchant_declines_df[IP_COUNTRY_COL].fillna("Unknown"))
                         top_cards_dec = merchant_declines_df[CARD_COUNTRY_COL].fillna("Unknown").value_counts().head(10).index
@@ -998,17 +1015,15 @@ elif module == "2. Acquiring Monitoring":
             st.subheader("✉️ Enhanced Email Analytics (Declines Profiling)")
             
             if EMAIL_COL in merchant_df.columns:
-                # Get emails with declines for this merchant
                 m_decline_emails = set(
-                    merchant_df[merchant_df["state"].eq("DECLINE")][EMAIL_COL].dropna().astype(str).str.strip().unique()
+                    merchant_df[merchant_df["_is_decline"]][EMAIL_COL].dropna().astype(str).str.strip().unique()
                 )
                 
                 if m_decline_emails:
-                    # Map cards to emails across the merchant dataset to detect shared cards
                     card_email_map = {}
-                    if CARD_HASH_COL in merchant_df.columns:
+                    if CARD_IDENTIFIER_COL in merchant_df.columns:
                         card_email_map = (
-                            merchant_df.groupby(CARD_HASH_COL)[EMAIL_COL]
+                            merchant_df.groupby(CARD_IDENTIFIER_COL)[EMAIL_COL]
                             .apply(lambda x: sorted(set(x.dropna().astype(str).str.strip())))
                             .to_dict()
                         )
@@ -1018,20 +1033,20 @@ elif module == "2. Acquiring Monitoring":
                         e_df = merchant_df[merchant_df[EMAIL_COL].astype(str).str.strip() == email_val].copy()
 
                         total_tx = len(e_df)
-                        successful_tx = int((e_df["state"] == "APPROVE").sum())
-                        declined_tx = int((e_df["state"] == "DECLINE").sum())
+                        successful_tx = int(e_df["_is_success"].sum())
+                        declined_tx = int(e_df["_is_decline"].sum())
 
                         # IP Countries
                         ip_countries = sorted(e_df[IP_COUNTRY_COL].dropna().astype(str).str.upper().unique()) if IP_COUNTRY_COL in e_df.columns else []
                         
-                        # Cards & Countries
-                        card_hashes = sorted(e_df[CARD_HASH_COL].dropna().astype(str).unique()) if CARD_HASH_COL in e_df.columns else []
+                        # Unique Cards used by this Email (Last4 / Hash)
+                        cards_used = sorted(e_df[CARD_IDENTIFIER_COL].dropna().astype(str).unique()) if CARD_IDENTIFIER_COL in e_df.columns else []
                         card_countries = sorted(e_df[CARD_COUNTRY_COL].dropna().astype(str).str.upper().unique()) if CARD_COUNTRY_COL in e_df.columns else []
                         
                         # Cardholders
                         cardholders = sorted(e_df[CARDHOLDER_COL].dropna().astype(str).unique()) if CARDHOLDER_COL in e_df.columns else []
 
-                        # 3DS Failures (status_3d == 'N' and fraud_score < 30)
+                        # 3DS Failures Count (status_3d == 'N' and fraud_score < 30)
                         failed_3ds_count = 0
                         if STATUS_3D_COL in e_df.columns and SCORE_COL in e_df.columns:
                             failed_3ds_count = int(len(
@@ -1040,7 +1055,6 @@ elif module == "2. Acquiring Monitoring":
                                     (pd.to_numeric(e_df[SCORE_COL], errors="coerce") < 30)
                                 ]
                             ))
-                        has_3ds_failed = "Y" if failed_3ds_count > 0 else "N"
 
                         # Failed Status in Tags
                         failed_tags_count = 0
@@ -1049,17 +1063,10 @@ elif module == "2. Acquiring Monitoring":
                                 e_df[e_df[TAGS_COL].fillna("").astype(str).str.lower().str.contains("transaction_status failed", regex=False)]
                             ))
 
-                        # First Decline Details URL
-                        first_url = ""
-                        if DETAILS_URL_COL in e_df.columns:
-                            e_declines = e_df[e_df["state"] == "DECLINE"].sort_values("_date_dt")
-                            if not e_declines.empty:
-                                first_url = str(e_declines[DETAILS_URL_COL].iloc[0])
-
                         # Shared Cards Check
                         shared_cards_count = 0
                         shared_emails = set()
-                        for card in card_hashes:
+                        for card in cards_used:
                             other_emails = set(card_email_map.get(card, []))
                             other_emails.discard(email_val)
                             if len(other_emails) > 0:
@@ -1073,17 +1080,15 @@ elif module == "2. Acquiring Monitoring":
                             "Total Tx": total_tx,
                             "Successful (Approve)": successful_tx,
                             "Declined": declined_tx,
-                            "3DS Failed (Y/N)": has_3ds_failed,
                             "3DS Failed Count": failed_3ds_count,
                             "Failed Status (Tags)": failed_tags_count,
-                            "Unique Cards": len(card_hashes),
+                            "Unique Cards Used": len(cards_used),
                             "Card Countries": ", ".join(card_countries) if card_countries else "Unknown",
                             "IP Countries": ", ".join(ip_countries) if ip_countries else "Unknown",
                             "Cardholder Names": ", ".join(cardholders) if cardholders else "Unknown",
                             "Has Shared Cards": has_shared_cards,
                             "Shared Cards Count": shared_cards_count,
-                            "Shared With Emails": ", ".join(sorted(shared_emails)) if shared_emails else "None",
-                            "First Decline Details URL": first_url
+                            "Shared With Emails": ", ".join(sorted(shared_emails)) if shared_emails else "None"
                         })
 
                     emails_analytics_df = pd.DataFrame(email_rows).sort_values("Declined", ascending=False)
