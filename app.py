@@ -393,6 +393,28 @@ elif module == "2. Acquiring Monitoring":
         st.title("📉 Acquiring Merchant Decline Spike Monitoring")
         st.write("Detect decline rate spikes across merchants (last 7 days vs 21+ active days baseline) and run deep analysis.")
         
+        # Local Module Constants
+        MONITORING_DAYS = 7
+        MIN_BASELINE_ACTIVE_DAYS = 21
+        DECLINE_THRESHOLD = 0.06
+        TOP_MERCHANTS_LIMIT = 10
+        TOP_RULES_LIMIT = 10
+        TOP_EMAILS_LIMIT = 10
+        MIN_SPIKE_TRANSACTIONS = 10
+
+        DATE_COLUMN = "date"
+        STATE_COLUMN = "state"
+        MERCHANT_COLUMN = "merchant_id"
+        MERCHANT_NAME_COLUMN = "user_fullname"
+        TRANSACTION_ID_COLUMN = "transaction_id"
+        RULES_COLUMN = "applied_rule_ids"
+        EMAIL_COLUMN = "email/email"
+        DECLINE_STATE = "DECLINE"
+
+        GENERAL_REPORT_FILE = "SEON_Top10_Merchant_Decline_Spikes.xlsx"
+        DEEP_REPORT_FILE = "SEON_Selected_Merchants_Deep_Analysis.xlsx"
+        CHARTS_ZIP_FILE = "Selected_Merchant_Rule_Charts.zip"
+
         up_file = st.file_uploader("Upload SEON Acquiring Export (Excel/CSV):", type=["xlsx", "csv"], key="m21_upload")
         
         if up_file:
