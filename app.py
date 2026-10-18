@@ -1459,6 +1459,13 @@ elif module == "4. Top-Up Declines Monitoring":
         total_tx = len(df)
         accepted_tx = df["_is_accepted"].sum()
         failed_df = df[df["_is_failed"]].copy()
+        
+        # Pre-assign _reason_clean to prevent KeyError across all sub-blocks
+        if not failed_df.empty and REJECT_REASON_COL in failed_df.columns:
+            failed_df["_reason_clean"] = failed_df[REJECT_REASON_COL].apply(get_rule_name)
+        else:
+            failed_df["_reason_clean"] = "Unknown / Missing Reason"
+
         failed_tx = len(failed_df)
         failed_amount = failed_df["_amount"].sum()
         
@@ -1515,7 +1522,7 @@ elif module == "4. Top-Up Declines Monitoring":
                     fig_pm = px.bar(top_pm, x="count", y="method", orientation="h", title="Top Payment Methods (Declines)")
                     st.plotly_chart(fig_pm, use_container_width=True)
 
-            # --- NEW: HEATMAP USER COUNTRY VS CARD ISSUER COUNTRY ---
+            # --- HEATMAP USER COUNTRY VS CARD ISSUER COUNTRY ---
             if RESIDENCE_COL in failed_df.columns and CARD_COUNTRY_COL in failed_df.columns:
                 st.subheader("🌐 Heatmap: User Country vs. Card Issuer Country (Declines)")
                 ct_topup = pd.crosstab(
@@ -1535,13 +1542,12 @@ elif module == "4. Top-Up Declines Monitoring":
                     )
                     st.plotly_chart(fig_hm_topup, use_container_width=True)
 
-        # --- 3. TOP 10 USERS WITH PERIOD SELECTOR ---
+        # --- 3. TOP 10 USERS (VERTICAL STACK, NO INDEX) ---
         st.markdown("---")
         st.subheader("👤 Top 10 Declined Users Analytics")
         
         period_u = st.radio("Select Analysis Period for Top Users:", ["All Time", "Last Week (7 Days)", "Last Day (24 Hours)"], horizontal=True, key="m4_users_period")
         
-        # Filter failed_df based on selected period
         max_df_date = failed_df["_date"].max() if not failed_df.empty else pd.Timestamp.now()
         if period_u == "Last Week (7 Days)":
             u_filtered_df = failed_df[failed_df["_date"] >= (max_df_date - pd.Timedelta(days=6))].copy()
@@ -1552,66 +1558,66 @@ elif module == "4. Top-Up Declines Monitoring":
 
         if not u_filtered_df.empty and USER_COL in u_filtered_df.columns:
             def get_top_3_reasons(user_data):
-                if REJECT_REASON_COL in user_data.columns:
-                    top_r = user_data[REJECT_REASON_COL].dropna().apply(get_rule_name).value_counts().head(3)
+                if "_reason_clean" in user_data.columns:
+                    top_r = user_data["_reason_clean"].dropna().value_counts().head(3)
                     return ", ".join([f"{k} ({v})" for k, v in top_r.items()])
                 return "N/A"
 
-            col_u1, col_u2 = st.columns(2)
+            # Table 1: Top 10 Users by Amount (Full Width)
+            st.write(f"#### 💵 Top 10 Users by Declined Amount ({period_u})")
+            u_amt_summary = (
+                u_filtered_df.groupby(USER_COL)
+                .agg(
+                    total_declined_amount=("_amount", "sum"),
+                    total_declines_count=("_amount", "size")
+                )
+                .reset_index()
+                .sort_values("total_declined_amount", ascending=False)
+                .head(10)
+            )
             
-            with col_u1:
-                st.write(f"#### 💵 Top 10 Users by Declined Amount ({period_u})")
-                u_amt_summary = (
-                    u_filtered_df.groupby(USER_COL)
-                    .agg(
-                        total_declined_amount=("_amount", "sum"),
-                        total_declines_count=("_amount", "size")
-                    )
-                    .reset_index()
-                    .sort_values("total_declined_amount", ascending=False)
-                    .head(10)
-                )
-                
-                u_amt_summary["top_3_decline_reasons"] = u_amt_summary[USER_COL].apply(
-                    lambda u_id: get_top_3_reasons(u_filtered_df[u_filtered_df[USER_COL] == u_id])
-                )
-                
-                u_amt_summary = u_amt_summary.rename(columns={
-                    USER_COL: "User ID",
-                    "total_declined_amount": "Total Declined Amount (EUR)",
-                    "total_declines_count": "Total Declines Count",
-                    "top_3_decline_reasons": "Top 3 Decline Reasons"
-                })
-                
-                u_amt_summary["Total Declined Amount (EUR)"] = u_amt_summary["Total Declined Amount (EUR)"].apply(lambda x: f"{x:,.2f} EUR")
-                st.dataframe(u_amt_summary, use_container_width=True)
+            u_amt_summary["top_3_decline_reasons"] = u_amt_summary[USER_COL].apply(
+                lambda u_id: get_top_3_reasons(u_filtered_df[u_filtered_df[USER_COL] == u_id])
+            )
+            
+            u_amt_summary = u_amt_summary.rename(columns={
+                USER_COL: "User ID",
+                "total_declined_amount": "Total Declined Amount (EUR)",
+                "total_declines_count": "Total Declines Count",
+                "top_3_decline_reasons": "Top 3 Decline Reasons"
+            })
+            
+            u_amt_summary["Total Declined Amount (EUR)"] = u_amt_summary["Total Declined Amount (EUR)"].apply(lambda x: f"{x:,.2f} EUR")
+            st.dataframe(u_amt_summary, use_container_width=True, hide_index=True)
 
-            with col_u2:
-                st.write(f"#### 🔢 Top 10 Users by Number of Declines ({period_u})")
-                u_cnt_summary = (
-                    u_filtered_df.groupby(USER_COL)
-                    .agg(
-                        total_declines_count=("_amount", "size"),
-                        total_declined_amount=("_amount", "sum")
-                    )
-                    .reset_index()
-                    .sort_values("total_declines_count", ascending=False)
-                    .head(10)
+            st.write("<br>", unsafe_allow_html=True)
+
+            # Table 2: Top 10 Users by Count (Full Width)
+            st.write(f"#### 🔢 Top 10 Users by Number of Declines ({period_u})")
+            u_cnt_summary = (
+                u_filtered_df.groupby(USER_COL)
+                .agg(
+                    total_declines_count=("_amount", "size"),
+                    total_declined_amount=("_amount", "sum")
                 )
-                
-                u_cnt_summary["top_3_decline_reasons"] = u_cnt_summary[USER_COL].apply(
-                    lambda u_id: get_top_3_reasons(u_filtered_df[u_filtered_df[USER_COL] == u_id])
-                )
-                
-                u_cnt_summary = u_cnt_summary.rename(columns={
-                    USER_COL: "User ID",
-                    "total_declines_count": "Total Declines Count",
-                    "total_declined_amount": "Total Declined Amount (EUR)",
-                    "top_3_decline_reasons": "Top 3 Decline Reasons"
-                })
-                
-                u_cnt_summary["Total Declined Amount (EUR)"] = u_cnt_summary["Total Declined Amount (EUR)"].apply(lambda x: f"{x:,.2f} EUR")
-                st.dataframe(u_cnt_summary, use_container_width=True)
+                .reset_index()
+                .sort_values("total_declines_count", ascending=False)
+                .head(10)
+            )
+            
+            u_cnt_summary["top_3_decline_reasons"] = u_cnt_summary[USER_COL].apply(
+                lambda u_id: get_top_3_reasons(u_filtered_df[u_filtered_df[USER_COL] == u_id])
+            )
+            
+            u_cnt_summary = u_cnt_summary.rename(columns={
+                USER_COL: "User ID",
+                "total_declines_count": "Total Declines Count",
+                "total_declined_amount": "Total Declined Amount (EUR)",
+                "top_3_decline_reasons": "Top 3 Decline Reasons"
+            })
+            
+            u_cnt_summary["Total Declined Amount (EUR)"] = u_cnt_summary["Total Declined Amount (EUR)"].apply(lambda x: f"{x:,.2f} EUR")
+            st.dataframe(u_cnt_summary, use_container_width=True, hide_index=True)
         else:
             st.info(f"No failed user transactions found for period: {period_u}")
 
@@ -1628,9 +1634,7 @@ elif module == "4. Top-Up Declines Monitoring":
         else:
             r_filtered_df = failed_df.copy()
 
-        if not r_filtered_df.empty and REJECT_REASON_COL in r_filtered_df.columns:
-            r_filtered_df["_reason_clean"] = r_filtered_df[REJECT_REASON_COL].apply(get_rule_name)
-            
+        if not r_filtered_df.empty:
             reasons_summary = (
                 r_filtered_df.groupby("_reason_clean")
                 .agg(
@@ -1753,4 +1757,5 @@ elif module == "4. Top-Up Declines Monitoring":
                 file_name="TopUp_Declined_Analytics_Report.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
+            
             
