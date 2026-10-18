@@ -866,17 +866,8 @@ elif module == "2. Acquiring Monitoring":
             IP_COUNTRY_COL = "ip_country" if "ip_country" in df.columns else "ipcountry"
             EMAIL_COL = "email/email" if "email/email" in df.columns else ("email/raw_email" if "email/raw_email" in df.columns else "email")
             
-            # Prioritize last4 for card identification, fall back to card_hash
-            if "card_last_4" in df.columns:
-                CARD_IDENTIFIER_COL = "card_last_4"
-            elif "last_4" in df.columns:
-                CARD_IDENTIFIER_COL = "last_4"
-            elif "card_last4" in df.columns:
-                CARD_IDENTIFIER_COL = "card_last4"
-            elif "card_hash" in df.columns:
-                CARD_IDENTIFIER_COL = "card_hash"
-            else:
-                CARD_IDENTIFIER_COL = "bin_country_code"
+            # Strict card_hash column mapping
+            CARD_HASH_COL = "card_hash" if "card_hash" in df.columns else None
 
             CARDHOLDER_COL = "card_fullname" if "card_fullname" in df.columns else "user_fullname"
             STATUS_3D_COL = "status_3d" if "status_3d" in df.columns else "3d_status"
@@ -888,21 +879,20 @@ elif module == "2. Acquiring Monitoring":
             
             df = df.dropna(subset=["merchant_id", "_date_day"]).copy()
             df["merchant_id"] = df["merchant_id"].astype(str).str.strip()
-            df["state"] = df["state"].fillna("").astype(str).str.strip().str.upper()
+            df["state_clean"] = df["state"].fillna("").astype(str).str.strip().str.upper()
             
-            # Pure State-Based Logic for Overall Metrics & Decline Rate
-            merchant_df_all = df.copy()
-            merchant_df_all["is_decline"] = merchant_df_all["state"].eq("DECLINE")
-            merchant_df_all["is_approve"] = merchant_df_all["state"].eq("APPROVE")
+            # Standard State-Based Flags for Baseline/Overall Metrics
+            df["is_decline"] = df["state_clean"].eq("DECLINE")
+            df["is_approve"] = df["state_clean"].eq("APPROVE")
             
-            unique_merchants = sorted(merchant_df_all["merchant_id"].unique())
+            unique_merchants = sorted(df["merchant_id"].unique())
             selected_m = st.selectbox("Select Merchant ID to Analyze:", unique_merchants, key="m22_select_merchant")
             
-            merchant_df = merchant_df_all[merchant_df_all["merchant_id"] == selected_m].copy()
+            merchant_df = df[df["merchant_id"] == selected_m].copy()
             
-            # --- 1. HISTORICAL DECLINE TREND (Standard State-Based Calculation) ---
+            # --- 1. HISTORICAL DECLINE TREND ---
             daily = merchant_df.groupby("_date_day").agg(
-                total_transactions=("state", "size"),
+                total_transactions=("state_clean", "size"),
                 declined_transactions=("is_decline", "sum"),
                 approved_transactions=("is_approve", "sum")
             ).reset_index().sort_values("_date_day")
@@ -1008,8 +998,8 @@ elif module == "2. Acquiring Monitoring":
                             fig_hm_dec = px.imshow(ct_filtered_dec, text_auto=True, color_continuous_scale="Reds", title="Declines Only Matrix")
                             st.plotly_chart(fig_hm_dec, use_container_width=True)
 
-            # --- 5. ENHANCED EMAIL DEEP ANALYTICS (Tag-based Analysis Strictly Here) ---
-            st.subheader("✉️ Enhanced Email Analytics (Declines Profiling)")
+            # --- 5. ENHANCED EMAIL DEEP ANALYTICS ---
+            st.subheader("✉️ Enhanced Email Analytics (Declines & Failed Profiling)")
             
             if EMAIL_COL in merchant_df.columns:
                 m_decline_emails = set(
@@ -1018,9 +1008,9 @@ elif module == "2. Acquiring Monitoring":
                 
                 if m_decline_emails:
                     card_email_map = {}
-                    if CARD_IDENTIFIER_COL in merchant_df.columns:
+                    if CARD_HASH_COL and CARD_HASH_COL in merchant_df.columns:
                         card_email_map = (
-                            merchant_df.groupby(CARD_IDENTIFIER_COL)[EMAIL_COL]
+                            merchant_df.groupby(CARD_HASH_COL)[EMAIL_COL]
                             .apply(lambda x: sorted(set(x.dropna().astype(str).str.strip())))
                             .to_dict()
                         )
@@ -1031,23 +1021,47 @@ elif module == "2. Acquiring Monitoring":
 
                         total_tx = len(e_df)
                         
-                        # Custom Success check strictly for email table profiling
+                        # 1. Success check: Tag must explicitly contain "RC 00"
                         if TAGS_COL in e_df.columns:
-                            successful_tx = int(e_df[TAGS_COL].fillna("").astype(str).str.upper().str.contains(r"RC\s*00", regex=True).sum())
+                            has_rc00_series = e_df[TAGS_COL].fillna("").astype(str).str.upper().str.contains(r"RC\s*00", regex=True)
                         else:
-                            successful_tx = int(e_df["state"].eq("APPROVE").sum())
+                            has_rc00_series = e_df["state_clean"].eq("APPROVE")
                             
-                        declined_tx = total_tx - successful_tx
+                        successful_tx = int(has_rc00_series.sum())
+                        
+                        # 2. Direct Anti-Fraud Declines (State == DECLINE)
+                        direct_declines_tx = int(e_df["state_clean"].eq("DECLINE").sum())
+                        
+                        # 3. Failed Transactions: No RC 00 tag AND state is not direct DECLINE
+                        failed_tx = int((~has_rc00_series & ~e_df["state_clean"].eq("DECLINE")).sum())
 
-                        # IP Countries
+                        # IP Countries, Card Countries, Cardholder Names
                         ip_countries = sorted(e_df[IP_COUNTRY_COL].dropna().astype(str).str.upper().unique()) if IP_COUNTRY_COL in e_df.columns else []
-                        
-                        # Unique Cards used by this Email (Last4 / Hash)
-                        cards_used = sorted(e_df[CARD_IDENTIFIER_COL].dropna().astype(str).unique()) if CARD_IDENTIFIER_COL in e_df.columns else []
                         card_countries = sorted(e_df[CARD_COUNTRY_COL].dropna().astype(str).str.upper().unique()) if CARD_COUNTRY_COL in e_df.columns else []
-                        
-                        # Cardholders
                         cardholders = sorted(e_df[CARDHOLDER_COL].dropna().astype(str).unique()) if CARDHOLDER_COL in e_df.columns else []
+
+                        # Strict card_hash mapping for Unique Cards & Shared Cards
+                        if CARD_HASH_COL and CARD_HASH_COL in e_df.columns:
+                            cards_used = sorted(e_df[CARD_HASH_COL].dropna().astype(str).str.strip().unique())
+                            cards_used = [c for c in cards_used if c.lower() not in ["nan", "none", "null", ""]]
+                            unique_cards_count = len(cards_used)
+                            
+                            shared_cards_count = 0
+                            shared_emails = set()
+                            for card in cards_used:
+                                other_emails = set(card_email_map.get(card, []))
+                                other_emails.discard(email_val)
+                                if len(other_emails) > 0:
+                                    shared_cards_count += 1
+                                    shared_emails.update(other_emails)
+
+                            has_shared_cards = "Y" if shared_cards_count > 0 else "N"
+                            shared_with_str = ", ".join(sorted(shared_emails)) if shared_emails else "None"
+                        else:
+                            unique_cards_count = "No card_hash column"
+                            has_shared_cards = "N/A"
+                            shared_cards_count = 0
+                            shared_with_str = "No card_hash column"
 
                         # 3DS Failures Count (status_3d == 'N' and fraud_score < 30)
                         failed_3ds_count = 0
@@ -1059,43 +1073,41 @@ elif module == "2. Acquiring Monitoring":
                                 ]
                             ))
 
-                        # Failed Status in Tags
-                        failed_tags_count = 0
-                        if TAGS_COL in e_df.columns:
-                            failed_tags_count = int(len(
-                                e_df[e_df[TAGS_COL].fillna("").astype(str).str.lower().str.contains("transaction_status failed", regex=False)]
-                            ))
-
-                        # Shared Cards Check
-                        shared_cards_count = 0
-                        shared_emails = set()
-                        for card in cards_used:
-                            other_emails = set(card_email_map.get(card, []))
-                            other_emails.discard(email_val)
-                            if len(other_emails) > 0:
-                                shared_cards_count += 1
-                                shared_emails.update(other_emails)
-
-                        has_shared_cards = "Y" if shared_cards_count > 0 else "N"
-
                         email_rows.append({
                             "Email": email_val,
                             "Total Tx": total_tx,
-                            "Successful (Approve)": successful_tx,
-                            "Declined": declined_tx,
+                            "Successful (RC 00 Tag)": successful_tx,
+                            "Direct Declines": direct_declines_tx,
+                            "Failed Tx (No RC 00 Tag)": failed_tx,
                             "3DS Failed Count": failed_3ds_count,
-                            "Failed Status (Tags)": failed_tags_count,
-                            "Unique Cards Used": len(cards_used),
+                            "Unique Cards (card_hash)": unique_cards_count,
                             "Card Countries": ", ".join(card_countries) if card_countries else "Unknown",
                             "IP Countries": ", ".join(ip_countries) if ip_countries else "Unknown",
                             "Cardholder Names": ", ".join(cardholders) if cardholders else "Unknown",
                             "Has Shared Cards": has_shared_cards,
                             "Shared Cards Count": shared_cards_count,
-                            "Shared With Emails": ", ".join(sorted(shared_emails)) if shared_emails else "None"
+                            "Shared With Emails": shared_with_str
                         })
 
-                    emails_analytics_df = pd.DataFrame(email_rows).sort_values("Declined", ascending=False)
-                    st.dataframe(emails_analytics_df, use_container_width=True)
+                    emails_analytics_df = pd.DataFrame(email_rows).sort_values(["Direct Declines", "Failed Tx (No RC 00 Tag)"], ascending=False)
+                    
+                    # Highlight Shared Cards & 3DS Failures in UI
+                    def style_email_table(df_to_style):
+                        def highlight_rows(row):
+                            styles = [''] * len(row)
+                            if row.get("Has Shared Cards") == "Y":
+                                return ['background-color: #ffe6e6'] * len(row)
+                            return styles
+
+                        styled = df_to_style.style.apply(highlight_rows, axis=1)
+                        if "3DS Failed Count" in df_to_style.columns:
+                            styled = styled.map(
+                                lambda val: 'background-color: #fff3cd; font-weight: bold;' if isinstance(val, (int, float)) and val > 0 else '',
+                                subset=["3DS Failed Count"]
+                            )
+                        return styled
+
+                    st.dataframe(style_email_table(emails_analytics_df), use_container_width=True)
                 else:
                     st.info("No emails with decline transactions found for this merchant.")
 
@@ -1114,6 +1126,7 @@ elif module == "2. Acquiring Monitoring":
                 file_name=f"SEON_Merchant_Analysis_{selected_m}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
+            
 # ============================================================
 # MODULE 3: MONTHLY TOP-UP DECLINE REPORT
 # ============================================================
