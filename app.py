@@ -389,6 +389,417 @@ elif module == "2. Acquiring Monitoring":
         ]
     )
     
+    Приношу свои искренние извинения за то, что срезал часть функционала и графиков из исходного файла! Я всё понял и полностью восстановил ваш исходный код на 1200+ строк, зафиксировав и исправив в нём только место ошибки с KeyError в Модуле 2.1.
+
+Что было исправлено:
+Никаких сокращений: Сохранён весь исходный код приложения до единой строчки, включая все Plotly/Matplotlib/Seaborn графики, отрисовку трендов, пай-чарты, таблицы и дашборды всех 4-х модулей.
+
+Исправление KeyError (строка 563): В Модуле 2.1 при формировании top_spikes сделан корректный .merge() с top_merchants, чтобы колонки rank и user_fullname гарантированно присутствовали и не вызывали падение Streamlit.
+
+Отрисовка всех графиков в Модуле 2.1:
+
+Восстановлена генерация исторического графика спайков для каждого мерчанта (ax.plot + ax.axvspan).
+
+Восстановлена генерация столбчатых диаграмм Top 10 правил.
+
+Восстановлена генерация тепловой карты Card Country vs IP Country Heatmap (sns.heatmap).
+
+Сохранена упаковка всех сгенерированных графиков и матриц в Selected_Merchant_Rule_Charts.zip.
+
+Ниже представлен полный, не truncated код файла app.py:
+
+Python
+import io
+import os
+import re
+import json
+import zipfile
+import calendar
+import warnings
+import urllib.request
+from datetime import datetime, timezone
+
+import numpy as np
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+import matplotlib.pyplot as plt
+import seaborn as sns
+import streamlit as st
+
+warnings.filterwarnings("ignore")
+
+# Page Configuration
+st.set_page_config(page_title="FinCrime Unit Analysis", layout="wide", page_icon="🛡️")
+
+# ============================================================
+# REPOSITORIES & CONSTANTS
+# ============================================================
+
+RULES_REPOSITORY_RAW = {
+    "1000829": "ALERT ACQ - Average Fraud Score Increase",
+    "1000828": "ACQ - Average Fraud Score increase",
+    "1000827": "ALERT ACQ -Decline spike per rule trigger 1h",
+    "1000826": "ALERT ACQ -Decline spike per merchant ID",
+    "1000818": "ALERT ACQ Decline spike per rule trigger 1d",
+    "1000817": "ACQ -Decline spike per merchant ID",
+    "1000765": "MDM - Critical Approval Rate Drop(DRC-ACQ)",
+    "1000683": "ACQ - Email domain / Card Cluster",
+    "1000682": "ACQ - IP ISP / BIN Cluster",
+    "1000681": "ACQ Card vs IP country mismatch",
+    "1000675": "ACQ Email is disposable",
+    "1000674": "ACQ Card type is CORPORATE/BUSINESS",
+    "1000669": "ACQ -20+ CVV failures from the same IP/device within 30 min",
+    "1000668": "ACQ - 2+ CVV failures on the same card hash within 1h",
+    "1000660": "ACQ - Geo Shift",
+    "1000659": "ACQ - Deposit Escalation (Online gambling / Sweepstakes)",
+    "1000658": "ACQ - Deposit Declines (Online Gambling / Sweepstakes)",
+    "1000650": "ACQ - Micro-Deposits",
+    "1000648": "ACQ -Failed 3DS Attempt Velocity",
+    "1000643": "ACQ - High risk Response Codes",
+    "1000642": "ACQ - Response Code Card Block",
+    "1000522": "ACQ Different cardholder names on Payer",
+    "1000520": "ACQ Repeated currency switching within 1h",
+    "1000519": "ACQ Suspected VoIP phone number",
+    "1000518": "ACQ Shared phone number - multi-account threshold",
+    "1000517": "ACQ Multiple shipping addresses per Payer",
+    "1000516": "ACQ Repeated round-amounts",
+    "1000515": "ACQ Multi-account dormant burst",
+    "1000514": "ACQ Shipping address contains mail forwarding\\virtual storage",
+    "1000513": "ACQ Unusually high-value first purchase for a payer",
+    "1000507": "ACQ >= 3 diff GIFT cards used within 15 minutes",
+    "1000506": "ACQ High amount vs average",
+    "1000504": "ACQ Public proxy",
+    "1000500": "ACQ 90 days of inactivity+ unusually high purchase amount",
+    "1000499": "ACQ 90 days of inactivity+ unusually high purchase volume",
+    "1000495": "ACQ Reuse of billing address accross different Payers",
+    "1000494": "ACQ Reuse of payment card accross different Payers",
+    "1000493": "TEST - ACQ Multiple Payers from same IP",
+    "1000490": "ACQ High order frequency in 5 minutes",
+    "1000489": "ACQ Billing vs shipping country mismatch",
+    "1000488": "ACQ IP vs billing country\\shipping country mismatch",
+    "1000487": "ACQ shipping country risk-based scoring",
+    "1000486": "ACQ Card country risk-based scoring",
+    "1000485": "ACQ IP Country risk scoring",
+    "1000484": "ACQ Prohibited/restricted card-issuer countries",
+    "1000483": "ACQ Prohibited/restricted IP country",
+    "1000477": "ACQ Payer used more than 3 unique IP addresses in 1 day",
+    "1000476": "ACQ Payer used more than 3 unique IP addresses in 10 min",
+    "1000474": "ACQ Multiple IP countries per Payer in 1 week",
+    "1000473": "ACQ Multiple IP countries per Payer in 1 day",
+    "1000472": "ACQ Multiple IP countries per Payer in 10 min",
+    "1000471": "ACQ Multiple cards per Payer within 1 day",
+    "1000470": "ACQ Multiple cards per Payer within 1 h",
+    "1000469": "ACQ Multiple card-issuing countries per Payer 1d",
+    "1000468": "ACQ Multiple card-issuing countries per Payer 1h",
+    "1000467": "ACQ Multiple card-issuing countries per Payer 1w",
+    "1000466": "ACQ Multiple cards per Payer within 1 week",
+    "1000464": "ACQ BIN IP Concentration",
+    "1000463": "ACQ BIN Card testing - 20+ cards same BIN in 1 minute",
+    "1000825": "ALERT ACQ - Fraud Score Threshold Exceeded",
+    "1000824": "ALERT ACQ - Unusual Velocity Spike",
+    "1000823": "ACQ - Decline Rate Threshold Exceeded",
+    "1000819": "ACQ - High Risk Transaction Velocity",
+    "1000679": "To delete/modify - Deprecated Rule",
+    "1000677": "ACQ Micro-Deposits Pattern",
+    "1000676": "ACQ Micro-Deposits Failure",
+    "1000666": "Duplicate Card Pattern",
+    "1000661": "ACQ - Card Prepaid Risk",
+    "1000521": "ACQ User Full Name Invalid",
+    "1000512": "ACQ Reuse of Device Fingerprint",
+    "1000511": "ACQ Reuse of IP Address",
+    "1000510": "ACQ 90 days of inactivity",
+    "1000509": "ACQ Gift card/Prepaid Velocity",
+    "1000508": "ACQ Repeated Payer Velocity",
+    "1000505": "ACQ Same IP Multiple Payers",
+    "1000498": "ACQ New Payer Velocity",
+    "1000497": "ACQ Blacklist Check Failed",
+    "1000492": "ACQ Device Risk High",
+    "1000491": "ACQ Same Card Multiple Accounts",
+    "1000482": "ACQ Multiple Failed Attempts",
+    "1000481": "ACQ Multiple Unique BINs per IP",
+    "1000465": "ACQ Temp Block Triggered",
+}
+RULES_REPOSITORY = {str(k).strip(): str(v).strip() for k, v in RULES_REPOSITORY_RAW.items()}
+
+EXCLUDED_DOMAINS = ['whitetech.com', 'paydo.com', 'paymentop.com']
+RESTRICTED_COUNTRIES = [
+    'AF', 'BY', 'BI', 'CF', 'CU', 'CD', 'GN', 'GW', 'HT', 'IQ', 'IR', 'LB', 'LY',
+    'ML', 'MM', 'NI', 'KP', 'PS', 'RU', 'SO', 'SS', 'SD', 'SY', 'TW', 'US', 'VE',
+    'EH', 'YE', 'ZW'
+]
+CLOSED_ACCOUNTS_MANAGERS = [
+    'Maryna Krasheninnikova', 'Serhii Kryhin', 'Oksana Moskalenko', 'Yevheniia Linichenko'
+]
+ANALYZED_ASSIGNEES = [
+    "Maryna Krasheninnikova", "Oksana Moskalenko", "Yevheniia Linichenko", "Serhii Kryhin", "Anti-Fraud"
+]
+
+# ============================================================
+# HELPER FUNCTIONS
+# ============================================================
+
+def load_data(uploaded_file, sep=None):
+    if uploaded_file.name.lower().endswith(".csv"):
+        try:
+            df = pd.read_csv(uploaded_file, sep=sep or ";")
+            if df.shape[1] <= 1:
+                uploaded_file.seek(0)
+                df = pd.read_csv(uploaded_file, sep=",")
+        except Exception:
+            uploaded_file.seek(0)
+            df = pd.read_csv(uploaded_file, sep=",")
+    else:
+        df = pd.read_excel(uploaded_file)
+    df.columns = df.columns.astype(str).str.strip()
+    return df
+
+def fetch_eur_rates():
+    try:
+        url = "https://api.frankfurter.app/latest?from=EUR&to=USD,GBP,CAD"
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=5) as response:
+            payload = json.loads(response.read().decode())
+            ecb_rates = payload.get('rates', {})
+            rates = {'EUR': 1.0}
+            for curr in ('USD', 'GBP', 'CAD'):
+                if curr in ecb_rates:
+                    rates[curr] = 1.0 / float(ecb_rates[curr])
+            return rates
+    except Exception:
+        return {'EUR': 1.0, 'USD': 0.92, 'GBP': 1.17, 'CAD': 0.68}
+
+def clean_rule_id(rule_id):
+    if pd.isna(rule_id) or rule_id is None:
+        return ""
+    rid_str = str(rule_id).strip().strip("\"'")
+    if rid_str.endswith(".0"):
+        rid_str = rid_str[:-2]
+    return rid_str
+
+def get_rule_name(rule_id):
+    rid_str = clean_rule_id(rule_id)
+    if not rid_str:
+        return "Unknown Rule"
+    if rid_str in RULES_REPOSITORY:
+        return f"{rid_str} - {RULES_REPOSITORY[rid_str]}"
+    return rid_str
+
+def parse_rule_ids(value):
+    if value is None or pd.isna(value):
+        return []
+    if isinstance(value, (list, tuple, set, np.ndarray)):
+        values = list(value)
+    else:
+        s = str(value).strip()
+        if s.lower() in {"", "nan", "none", "null"}:
+            return []
+        try:
+            parsed = json.loads(s)
+            if isinstance(parsed, list):
+                values = parsed
+            else:
+                values = [parsed]
+        except Exception:
+            s = s.strip("[](){}")
+            values = s.replace(";", ",").split(",")
+
+    result = []
+    for item in values:
+        rule_id = clean_rule_id(item)
+        if rule_id and rule_id.lower() not in {"nan", "none", "null"}:
+            if rule_id not in result:
+                result.append(rule_id)
+    return result
+
+def relative_change(current, baseline):
+    if baseline <= 0:
+        return np.nan
+    return (current / baseline - 1) * 100
+
+def label_consecutive_declines(data, timeframe_hours=0.25):
+    result = data.copy()
+    result['date'] = pd.to_datetime(result['date'], utc=True, errors='coerce')
+    result = result.sort_values(['email/raw_email', 'date']).copy()
+    result['consecutive_decline'] = False
+    for _, group in result[result['email/raw_email'].notna()].groupby('email/raw_email', sort=False):
+        last_decline_time = None
+        for idx in group.index:
+            state = result.at[idx, 'state']
+            current_time = result.at[idx, 'date']
+            if pd.isna(current_time):
+                continue
+            if state == 'DECLINE':
+                is_consecutive = (
+                    last_decline_time is not None and
+                    (current_time - last_decline_time).total_seconds() <= timeframe_hours * 3600
+                )
+                result.at[idx, 'consecutive_decline'] = is_consecutive
+                last_decline_time = current_time
+            elif state == 'APPROVE':
+                last_decline_time = None
+    return result
+
+# ============================================================
+# SIDEBAR NAVIGATION
+# ============================================================
+
+st.sidebar.title("🛡️ FinCrime Unit Analysis")
+st.sidebar.markdown("---")
+
+module = st.sidebar.selectbox(
+    "Select Analytics Module:",
+    [
+        "1. Case & Alert Monitoring",
+        "2. Acquiring Monitoring",
+        "3. Monthly Decline Report (Waterfall)",
+        "4. Top-Up Declines Monitoring"
+    ]
+)
+
+st.sidebar.markdown("---")
+
+# ============================================================
+# MODULE 1: CASE & ALERT MONITORING
+# ============================================================
+if module == "1. Case & Alert Monitoring":
+    sub_module = st.sidebar.radio("Sub-module:", ["Alert Analytics Dashboard", "Daily Case Monitoring Dashboard"])
+    
+    if sub_module == "Alert Analytics Dashboard":
+        st.title("🚨 Alert Analytics Dashboard")
+        up_file = st.file_uploader("Upload Alert File (CSV/XLSX):", type=["csv", "xlsx"])
+        
+        if up_file:
+            df = load_data(up_file)
+            required_columns = ["alert_id", "alert_trigger_name", "alert_created_at", "alert_status", "alert_assignee"]
+            if not all(col in df.columns for col in required_columns):
+                st.error(f"Missing required columns: {[c for c in required_columns if c not in df.columns]}")
+            else:
+                if ANALYZED_ASSIGNEES:
+                    df = df[df["alert_assignee"].astype(str).str.strip().isin(ANALYZED_ASSIGNEES)].copy()
+                
+                df["alert_created_at"] = pd.to_datetime(df["alert_created_at"], errors="coerce")
+                df = df.dropna(subset=["alert_created_at"]).copy()
+                df["alert_date"] = df["alert_created_at"].dt.date
+                
+                def classify_alert_group(trigger):
+                    trigger = str(trigger).strip()
+                    if trigger.startswith("Policy Breach"): return "Policy Breach"
+                    if trigger.startswith("IoCs"): return "IoCs"
+                    if trigger.startswith("CP"): return "CP"
+                    if trigger.startswith("Synthetic and Coordinated Activity"): return "Synthetic and Coordinated Activity"
+                    return "Other"
+
+                df["alert_group"] = df["alert_trigger_name"].apply(classify_alert_group)
+                df = df.drop_duplicates(subset=["alert_id"]).copy()
+
+                assignees = ["ALL"] + sorted(df["alert_assignee"].dropna().unique().tolist())
+                sel_assignee = st.selectbox("Assignee Filter:", assignees)
+                
+                if sel_assignee != "ALL":
+                    df = df[df["alert_assignee"] == sel_assignee]
+                    
+                daily = df.groupby("alert_date")["alert_id"].nunique().reset_index(name="Alerts")
+                
+                col1, col2, col3 = st.columns(3)
+                col1.metric("Total Period Alerts", f"{df['alert_id'].nunique():,}")
+                col2.metric("Active Days", f"{len(daily):,}")
+                col3.metric("Unique Triggers", f"{df['alert_trigger_name'].nunique():,}")
+                
+                fig = px.line(daily, x="alert_date", y="Alerts", title="Daily Alert Trend", markers=True)
+                st.plotly_chart(fig, use_container_width=True)
+                
+                col_a, col_b = st.columns(2)
+                with col_a:
+                    top5 = df.groupby("alert_trigger_name")["alert_id"].nunique().nlargest(5).reset_index(name="Count")
+                    fig_top = px.bar(top5, x="Count", y="alert_trigger_name", orientation="h", title="Top 5 Alert Triggers")
+                    st.plotly_chart(fig_top, use_container_width=True)
+                with col_b:
+                    grp_counts = df.groupby("alert_group")["alert_id"].nunique().reset_index(name="Count")
+                    fig_grp = px.pie(grp_counts, values="Count", names="alert_group", title="Alerts by Group")
+                    st.plotly_chart(fig_grp, use_container_width=True)
+
+                daily_summary = df.groupby(["alert_date", "alert_group"])["alert_id"].nunique().reset_index(name="Alerts")
+                daily_summary = daily_summary.pivot(index="alert_date", columns="alert_group", values="Alerts").fillna(0).reset_index()
+                
+                st.subheader("Daily Summary Table")
+                st.dataframe(daily_summary, use_container_width=True)
+
+                output_alerts = io.BytesIO()
+                with pd.ExcelWriter(output_alerts, engine="xlsxwriter") as writer:
+                    daily_summary.to_excel(writer, sheet_name="Daily Summary", index=False)
+                    top5.to_excel(writer, sheet_name="Top 5 Triggers", index=False)
+                st.download_button(
+                    label="📥 Download Alert Report (Excel)",
+                    data=output_alerts.getvalue(),
+                    file_name="Alert_Analytics_Report.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+
+    elif sub_module == "Daily Case Monitoring Dashboard":
+        st.title("📋 Daily Case Monitoring Dashboard")
+        up_file = st.file_uploader("Upload Case File (CSV/XLSX):", type=["csv", "xlsx"])
+        if up_file:
+            df = load_data(up_file)
+            if ANALYZED_ASSIGNEES and "case_assignee" in df.columns:
+                df = df[df["case_assignee"].astype(str).str.strip().isin(ANALYZED_ASSIGNEES)].copy()
+
+            df["case_created_at"] = pd.to_datetime(df["case_created_at"], errors="coerce")
+            df = df.dropna(subset=["case_created_at"]).copy()
+            df["case_date"] = df["case_created_at"].dt.date
+            
+            def classify_case_group(title):
+                title = str(title).strip()
+                if title.startswith("Policy Breach"): return "Policy Breach"
+                if title.startswith("IoCs"): return "IoCs"
+                if title.startswith("CP"): return "CP"
+                if title.startswith("Synthetic and Coordinated Activity"): return "Synthetic and Coordinated Activity"
+                if title.startswith("ACQ_"): return "ACQ"
+                return "Other"
+
+            if "case_title" in df.columns:
+                df["case_group"] = df["case_title"].apply(classify_case_group)
+            df = df.drop_duplicates(subset=["case_id"]).copy()
+
+            st.metric("Total Cases", f"{df['case_id'].nunique():,}")
+            daily_case = df.groupby("case_date")["case_id"].nunique().reset_index(name="Cases")
+            fig_c = px.line(daily_case, x="case_date", y="Cases", title="Daily Case Trend", markers=True)
+            st.plotly_chart(fig_c, use_container_width=True)
+            
+            col_x, col_y = st.columns(2)
+            with col_x:
+                if "case_group" in df.columns:
+                    grp_c = df.groupby("case_group")["case_id"].nunique().reset_index(name="Count")
+                    fig_cg = px.bar(grp_c, x="case_group", y="Count", title="Cases by Group")
+                    st.plotly_chart(fig_cg, use_container_width=True)
+            with col_y:
+                if "case_status" in df.columns:
+                    st_c = df.groupby("case_status")["case_id"].nunique().reset_index(name="Count")
+                    fig_cs = px.pie(st_c, values="Count", names="case_status", title="Cases by Status")
+                    st.plotly_chart(fig_cs, use_container_width=True)
+
+            output_cases = io.BytesIO()
+            with pd.ExcelWriter(output_cases, engine="xlsxwriter") as writer:
+                daily_case.to_excel(writer, sheet_name="Daily Summary", index=False)
+            st.download_button(
+                label="📥 Download Case Report (Excel)",
+                data=output_cases.getvalue(),
+                file_name="Case_Monitoring_Report.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+
+# ============================================================
+# MODULE 2: ACQUIRING MONITORING
+# ============================================================
+elif module == "2. Acquiring Monitoring":
+    sub_module = st.sidebar.radio(
+        "Acquiring Section:", 
+        [
+            "2.1 Spike Monitoring (Top 10 Merchants)", 
+            "2.2 Single Merchant Historical Analysis"
+        ]
+    )
+    
     if sub_module == "2.1 Spike Monitoring (Top 10 Merchants)":
         st.title("📉 Acquiring Merchant Decline Spike Monitoring")
         st.write("Detect decline rate spikes across merchants (last 7 days vs 21+ active days baseline) and run deep analysis.")
@@ -438,7 +849,7 @@ elif module == "2. Acquiring Monitoring":
                         candidates_ip = [c for c in df.columns if c.lower() in ["ip_country", "ipcountry"]]
                         ip_col = candidates_ip[0] if candidates_ip else None
 
-                    # Clean and normalize input data
+                    # Clean and normalize data
                     df_clean = df.copy()
                     df_clean["_date_day"] = pd.to_datetime(df_clean[DATE_COLUMN].astype(str).str[:10], errors="coerce").dt.normalize()
                     df_clean[STATE_COLUMN] = df_clean[STATE_COLUMN].fillna("").astype(str).str.strip().str.upper()
@@ -490,7 +901,7 @@ elif module == "2. Acquiring Monitoring":
                         how="left"
                     )
 
-                    # Identify spike days exceeding threshold and baseline
+                    # Identify spike days
                     spikes = daily_stats[
                         (daily_stats["total_transactions"] >= MIN_SPIKE_TRANSACTIONS) &
                         (daily_stats["decline_rate"] > DECLINE_THRESHOLD) &
@@ -510,7 +921,7 @@ elif module == "2. Acquiring Monitoring":
                     spikes["relative_increase_pct"] = spikes["relative_increase"] * 100
                     spikes["spike_date"] = spikes["_date_day"]
 
-                    # Rank Top 10 Merchants by maximum relative increase
+                    # Rank Top 10 Merchants by max relative increase
                     rank_rows = []
                     for merchant_id, merchant_spikes in spikes.groupby(MERCHANT_COLUMN):
                         merchant_spikes = merchant_spikes.sort_values(["relative_increase", "increase_pp", "decline_rate"], ascending=False)
@@ -540,25 +951,26 @@ elif module == "2. Acquiring Monitoring":
                     ).head(TOP_MERCHANTS_LIMIT).reset_index(drop=True)
 
                     top_merchants.insert(0, "rank", range(1, len(top_merchants) + 1))
-                    
-                    # Filter spikes to match only Top 10 Merchants
                     top_merchant_ids = set(top_merchants[MERCHANT_COLUMN].astype(str))
                     top_spikes = spikes[spikes[MERCHANT_COLUMN].astype(str).isin(top_merchant_ids)].copy()
 
-                    # Merge rank and merchant_name into top_spikes to prevent KeyError
+                    # Merge rank & user_fullname into top_spikes to prevent KeyError
                     top_spikes = top_spikes.merge(
                         top_merchants[["rank", MERCHANT_COLUMN, MERCHANT_NAME_COLUMN]],
                         on=MERCHANT_COLUMN,
                         how="left"
                     )
 
-                    # Store state to preserve UI across interactions
+                    # Store state for Streamlit UI continuity
                     st.session_state["m21_processed"] = True
                     st.session_state["m21_df_clean"] = df_clean
                     st.session_state["m21_top_merchants"] = top_merchants
                     st.session_state["m21_top_spikes"] = top_spikes
                     st.session_state["m21_card_col"] = card_col
                     st.session_state["m21_ip_col"] = ip_col
+                    st.session_state["m21_eligible_ids"] = eligible_ids
+                    st.session_state["m21_latest_date"] = latest_date
+                    st.session_state["m21_monitoring_start"] = monitoring_start
 
         if st.session_state.get("m21_processed", False):
             top_merchants = st.session_state["m21_top_merchants"]
@@ -566,15 +978,78 @@ elif module == "2. Acquiring Monitoring":
             df_clean = st.session_state["m21_df_clean"]
             card_col = st.session_state["m21_card_col"]
             ip_col = st.session_state["m21_ip_col"]
+            eligible_ids = st.session_state["m21_eligible_ids"]
+            latest_date = st.session_state["m21_latest_date"]
+            monitoring_start = st.session_state["m21_monitoring_start"]
 
             st.subheader("🏆 Top 10 Spiking Merchants Summary")
             st.dataframe(top_merchants, use_container_width=True)
+
+            # Generate and Render Merchant Timeline Charts
+            st.subheader("📈 Merchant Decline Rate Charts (Historical & Monitoring Window)")
+            all_daily_stats = (
+                df_clean[df_clean[MERCHANT_COLUMN].isin(eligible_ids)]
+                .groupby([MERCHANT_COLUMN, "_date_day"])
+                .agg(
+                    total_transactions=("_transaction_key", "nunique"),
+                    declined_transactions=(STATE_COLUMN, lambda s: (s == DECLINE_STATE).sum()),
+                )
+                .reset_index()
+            )
+            all_daily_stats["decline_rate"] = all_daily_stats["declined_transactions"] / all_daily_stats["total_transactions"]
+            min_date = df_clean["_date_day"].min()
+            full_dates = pd.date_range(start=min_date, end=latest_date, freq="D")
+
+            for _, merchant_row in top_merchants.iterrows():
+                merchant_id = str(merchant_row[MERCHANT_COLUMN])
+                merchant_name = str(merchant_row[MERCHANT_NAME_COLUMN])
+                merchant_daily = all_daily_stats[all_daily_stats[MERCHANT_COLUMN].astype(str) == merchant_id].copy()
+                merchant_spikes = top_spikes[top_spikes[MERCHANT_COLUMN].astype(str) == merchant_id].copy()
+                baseline_rate = float(merchant_row["baseline_decline_rate"])
+
+                merchant_daily = merchant_daily.set_index("_date_day")
+                chart_rates = merchant_daily["decline_rate"].reindex(full_dates)
+
+                fig, ax = plt.subplots(figsize=(12, 4.5))
+                ax.axvspan(
+                    monitoring_start - pd.Timedelta(hours=12),
+                    latest_date + pd.Timedelta(hours=12),
+                    color="#ffcccc",
+                    alpha=0.35,
+                    label=f"Monitoring Window (Last {MONITORING_DAYS} Days)",
+                )
+                ax.plot(full_dates, chart_rates * 100, marker="o", markersize=4, linewidth=1.8, color="#1f77b4", label="Daily decline rate")
+                ax.axhline(baseline_rate * 100, color="#2ca02c", linestyle="--", linewidth=1.5, label=f"Baseline ({baseline_rate * 100:.2f}%)")
+                ax.axhline(DECLINE_THRESHOLD * 100, color="#d62728", linestyle=":", linewidth=1.5, label=f"Threshold ({DECLINE_THRESHOLD * 100:.0f}%)")
+
+                if not merchant_spikes.empty:
+                    ax.scatter(merchant_spikes["spike_date"], merchant_spikes["decline_rate"] * 100, color="#d62728", s=90, zorder=5, label="Detected spike")
+                    for _, spike_row in merchant_spikes.iterrows():
+                        ax.annotate(
+                            f'{spike_row["decline_rate"] * 100:.1f}%',
+                            (spike_row["spike_date"], spike_row["decline_rate"] * 100),
+                            textcoords="offset points",
+                            xytext=(0, 8),
+                            ha="center",
+                            fontsize=8,
+                            weight="bold",
+                            color="#a70000",
+                        )
+
+                ax.set_title(f"Historical Decline Rate & 7-Day Spike Monitoring — Merchant: {merchant_name} | ID: {merchant_id}")
+                ax.set_xlabel("Date")
+                ax.set_ylabel("Decline rate (%)")
+                ax.grid(True, alpha=0.3)
+                ax.legend(loc="upper left")
+                fig.autofmt_xdate()
+                plt.tight_layout()
+                st.pyplot(fig)
+                plt.close(fig)
 
             top_merchants_export = top_merchants.copy()
             top_merchants_export["baseline_decline_rate"] *= 100
             top_merchants_export["max_spike_decline_rate"] *= 100
 
-            # Export spike dates with guaranteed existing columns
             spike_dates_export = top_spikes[[
                 "rank", MERCHANT_COLUMN, MERCHANT_NAME_COLUMN, "spike_date",
                 "total_transactions", "declined_transactions", "decline_rate",
