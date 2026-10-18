@@ -1515,89 +1515,124 @@ elif module == "4. Top-Up Declines Monitoring":
                     fig_pm = px.bar(top_pm, x="count", y="method", orientation="h", title="Top Payment Methods (Declines)")
                     st.plotly_chart(fig_pm, use_container_width=True)
 
-        # --- 3. CLEAN TOP 10 USERS WITH TOP 3 REASONS METADATA ---
+            # --- NEW: HEATMAP USER COUNTRY VS CARD ISSUER COUNTRY ---
+            if RESIDENCE_COL in failed_df.columns and CARD_COUNTRY_COL in failed_df.columns:
+                st.subheader("🌐 Heatmap: User Country vs. Card Issuer Country (Declines)")
+                ct_topup = pd.crosstab(
+                    failed_df[RESIDENCE_COL].fillna("Unknown"), 
+                    failed_df[CARD_COUNTRY_COL].fillna("Unknown")
+                )
+                top_users_geo = failed_df[RESIDENCE_COL].fillna("Unknown").value_counts().head(10).index
+                top_cards_geo = failed_df[CARD_COUNTRY_COL].fillna("Unknown").value_counts().head(10).index
+                
+                ct_topup_filtered = ct_topup.loc[ct_topup.index.isin(top_users_geo), ct_topup.columns.isin(top_cards_geo)]
+                if not ct_topup_filtered.empty:
+                    fig_hm_topup = px.imshow(
+                        ct_topup_filtered, 
+                        text_auto=True, 
+                        color_continuous_scale="Reds", 
+                        title="User Country vs Card Issuer Country Matrix (Declines Only)"
+                    )
+                    st.plotly_chart(fig_hm_topup, use_container_width=True)
+
+        # --- 3. TOP 10 USERS WITH PERIOD SELECTOR ---
         st.markdown("---")
-        if not failed_df.empty and USER_COL in failed_df.columns:
-            # Helper function to compute top 3 reasons per user
+        st.subheader("👤 Top 10 Declined Users Analytics")
+        
+        period_u = st.radio("Select Analysis Period for Top Users:", ["All Time", "Last Week (7 Days)", "Last Day (24 Hours)"], horizontal=True, key="m4_users_period")
+        
+        # Filter failed_df based on selected period
+        max_df_date = failed_df["_date"].max() if not failed_df.empty else pd.Timestamp.now()
+        if period_u == "Last Week (7 Days)":
+            u_filtered_df = failed_df[failed_df["_date"] >= (max_df_date - pd.Timedelta(days=6))].copy()
+        elif period_u == "Last Day (24 Hours)":
+            u_filtered_df = failed_df[failed_df["_date"] == max_df_date].copy()
+        else:
+            u_filtered_df = failed_df.copy()
+
+        if not u_filtered_df.empty and USER_COL in u_filtered_df.columns:
             def get_top_3_reasons(user_data):
                 if REJECT_REASON_COL in user_data.columns:
                     top_r = user_data[REJECT_REASON_COL].dropna().apply(get_rule_name).value_counts().head(3)
-                    return "<br>".join([f"• {k} ({v})" for k, v in top_r.items()])
+                    return ", ".join([f"{k} ({v})" for k, v in top_r.items()])
                 return "N/A"
 
             col_u1, col_u2 = st.columns(2)
             
             with col_u1:
-                st.subheader("👤 Top 10 Users by Declined Amount")
+                st.write(f"#### 💵 Top 10 Users by Declined Amount ({period_u})")
                 u_amt_summary = (
-                    failed_df.groupby(USER_COL)
+                    u_filtered_df.groupby(USER_COL)
                     .agg(
-                        total_amount=("_amount", "sum"),
-                        declines_count=("_amount", "size")
+                        total_declined_amount=("_amount", "sum"),
+                        total_declines_count=("_amount", "size")
                     )
                     .reset_index()
-                    .sort_values("total_amount", ascending=False)
+                    .sort_values("total_declined_amount", ascending=False)
                     .head(10)
                 )
                 
-                u_amt_summary["top_3_reasons"] = u_amt_summary[USER_COL].apply(
-                    lambda u_id: get_top_3_reasons(failed_df[failed_df[USER_COL] == u_id])
+                u_amt_summary["top_3_decline_reasons"] = u_amt_summary[USER_COL].apply(
+                    lambda u_id: get_top_3_reasons(u_filtered_df[u_filtered_df[USER_COL] == u_id])
                 )
-                u_amt_summary["user_id_str"] = u_amt_summary[USER_COL].astype(str)
                 
-                fig_u_amt = px.bar(
-                    u_amt_summary,
-                    x="total_amount",
-                    y="user_id_str",
-                    orientation="h",
-                    color_discrete_sequence=["#2b5c8f"],
-                    hover_data={"total_amount": ":.2f", "declines_count": True, "top_3_reasons": True, "user_id_str": False},
-                    title="Top 10 Users by Declined Amount (Selected Period)",
-                    labels={"total_amount": "Total Amount (EUR)", "user_id_str": "User ID", "declines_count": "Total Declines", "top_3_reasons": "Top 3 Reasons"}
-                )
-                fig_u_amt.update_layout(yaxis={"categoryorder": "total ascending"})
-                st.plotly_chart(fig_u_amt, use_container_width=True)
+                u_amt_summary = u_amt_summary.rename(columns={
+                    USER_COL: "User ID",
+                    "total_declined_amount": "Total Declined Amount (EUR)",
+                    "total_declines_count": "Total Declines Count",
+                    "top_3_decline_reasons": "Top 3 Decline Reasons"
+                })
+                
+                u_amt_summary["Total Declined Amount (EUR)"] = u_amt_summary["Total Declined Amount (EUR)"].apply(lambda x: f"{x:,.2f} EUR")
+                st.dataframe(u_amt_summary, use_container_width=True)
 
             with col_u2:
-                st.subheader("🔢 Top 10 Users by Number of Declines")
+                st.write(f"#### 🔢 Top 10 Users by Number of Declines ({period_u})")
                 u_cnt_summary = (
-                    failed_df.groupby(USER_COL)
+                    u_filtered_df.groupby(USER_COL)
                     .agg(
-                        declines_count=("_amount", "size"),
-                        total_amount=("_amount", "sum")
+                        total_declines_count=("_amount", "size"),
+                        total_declined_amount=("_amount", "sum")
                     )
                     .reset_index()
-                    .sort_values("declines_count", ascending=False)
+                    .sort_values("total_declines_count", ascending=False)
                     .head(10)
                 )
                 
-                u_cnt_summary["top_3_reasons"] = u_cnt_summary[USER_COL].apply(
-                    lambda u_id: get_top_3_reasons(failed_df[failed_df[USER_COL] == u_id])
+                u_cnt_summary["top_3_decline_reasons"] = u_cnt_summary[USER_COL].apply(
+                    lambda u_id: get_top_3_reasons(u_filtered_df[u_filtered_df[USER_COL] == u_id])
                 )
-                u_cnt_summary["user_id_str"] = u_cnt_summary[USER_COL].astype(str)
                 
-                fig_u_cnt = px.bar(
-                    u_cnt_summary,
-                    x="declines_count",
-                    y="user_id_str",
-                    orientation="h",
-                    color_discrete_sequence=["#d62728"],
-                    hover_data={"declines_count": True, "total_amount": ":.2f", "top_3_reasons": True, "user_id_str": False},
-                    title="Top 10 Users by Number of Declines (Selected Period)",
-                    labels={"declines_count": "Declines Count", "user_id_str": "User ID", "total_amount": "Total Amount (EUR)", "top_3_reasons": "Top 3 Reasons"}
-                )
-                fig_u_cnt.update_layout(yaxis={"categoryorder": "total ascending"})
-                st.plotly_chart(fig_u_cnt, use_container_width=True)
+                u_cnt_summary = u_cnt_summary.rename(columns={
+                    USER_COL: "User ID",
+                    "total_declines_count": "Total Declines Count",
+                    "total_declined_amount": "Total Declined Amount (EUR)",
+                    "top_3_decline_reasons": "Top 3 Decline Reasons"
+                })
+                
+                u_cnt_summary["Total Declined Amount (EUR)"] = u_cnt_summary["Total Declined Amount (EUR)"].apply(lambda x: f"{x:,.2f} EUR")
+                st.dataframe(u_cnt_summary, use_container_width=True)
+        else:
+            st.info(f"No failed user transactions found for period: {period_u}")
 
-        # --- 4. TOP 5 DECLINE REASONS ---
+        # --- 4. TOP 5 DECLINE REASONS WITH PERIOD SELECTOR ---
         st.markdown("---")
-        st.subheader("🚨 Top 5 Decline Reasons (All-Time / Filtered Period)")
+        st.subheader("🚨 Top 5 Decline Reasons Analytics")
         
-        if not failed_df.empty and REJECT_REASON_COL in failed_df.columns:
-            failed_df["_reason_clean"] = failed_df[REJECT_REASON_COL].apply(get_rule_name)
+        period_r = st.radio("Select Analysis Period for Decline Reasons:", ["All Time", "Last Week (7 Days)", "Last Day (24 Hours)"], horizontal=True, key="m4_reasons_period")
+        
+        if period_r == "Last Week (7 Days)":
+            r_filtered_df = failed_df[failed_df["_date"] >= (max_df_date - pd.Timedelta(days=6))].copy()
+        elif period_r == "Last Day (24 Hours)":
+            r_filtered_df = failed_df[failed_df["_date"] == max_df_date].copy()
+        else:
+            r_filtered_df = failed_df.copy()
+
+        if not r_filtered_df.empty and REJECT_REASON_COL in r_filtered_df.columns:
+            r_filtered_df["_reason_clean"] = r_filtered_df[REJECT_REASON_COL].apply(get_rule_name)
             
             reasons_summary = (
-                failed_df.groupby("_reason_clean")
+                r_filtered_df.groupby("_reason_clean")
                 .agg(
                     declined_count=("_amount", "size"),
                     total_amount=("_amount", "sum")
@@ -1615,7 +1650,7 @@ elif module == "4. Top-Up Declines Monitoring":
                 color="total_amount",
                 color_continuous_scale="Reds",
                 orientation="h",
-                title="Top 5 Decline Reasons (Bar Color Represents Loss Amount in EUR)",
+                title=f"Top 5 Decline Reasons ({period_r}) — Bar Color Represents Loss Amount in EUR",
                 labels={
                     "declined_count": "Number of Declines",
                     "_reason_clean": "Decline Reason / Rule",
@@ -1655,6 +1690,8 @@ elif module == "4. Top-Up Declines Monitoring":
                     labels={"_date": "Date", "daily_count": "Declines Count", "_reason_clean": "Reason"}
                 )
                 st.plotly_chart(fig_reason_trend, use_container_width=True)
+        else:
+            st.info(f"No decline reason data available for period: {period_r}")
 
         # --- 5. PEAK SPIKE DAY DRILL-DOWN ANALYTICS ---
         st.markdown("---")
@@ -1716,3 +1753,4 @@ elif module == "4. Top-Up Declines Monitoring":
                 file_name="TopUp_Declined_Analytics_Report.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
+            
