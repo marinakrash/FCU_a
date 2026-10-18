@@ -546,223 +546,223 @@ elif module == "2. Acquiring Monitoring":
                     st.session_state["m21_card_col"] = card_col
                     st.session_state["m21_ip_col"] = ip_col
 
-            if st.session_state.get("m21_processed", False):
-                top_merchants = st.session_state["m21_top_merchants"]
-                top_spikes = st.session_state["m21_top_spikes"]
-                df_clean = st.session_state["m21_df_clean"]
-                card_col = st.session_state["m21_card_col"]
-                ip_col = st.session_state["m21_ip_col"]
+        if st.session_state.get("m21_processed", False):
+            top_merchants = st.session_state["m21_top_merchants"]
+            top_spikes = st.session_state["m21_top_spikes"]
+            df_clean = st.session_state["m21_df_clean"]
+            card_col = st.session_state["m21_card_col"]
+            ip_col = st.session_state["m21_ip_col"]
 
-                st.subheader("🏆 Top 10 Spiking Merchants Summary")
-                st.dataframe(top_merchants, use_container_width=True)
+            st.subheader("🏆 Top 10 Spiking Merchants Summary")
+            st.dataframe(top_merchants, use_container_width=True)
 
-                top_merchants_export = top_merchants.copy()
-                top_merchants_export["baseline_decline_rate"] *= 100
-                top_merchants_export["max_spike_decline_rate"] *= 100
+            top_merchants_export = top_merchants.copy()
+            top_merchants_export["baseline_decline_rate"] *= 100
+            top_merchants_export["max_spike_decline_rate"] *= 100
 
-                spike_dates_export = top_spikes[[
-                    "rank", MERCHANT_COLUMN, MERCHANT_NAME_COLUMN, "spike_date",
-                    "total_transactions", "declined_transactions", "decline_rate",
-                    "baseline_decline_rate", "increase_pp", "relative_increase_pct"
-                ]].copy()
-                spike_dates_export["decline_rate"] *= 100
-                spike_dates_export["baseline_decline_rate"] *= 100
+            spike_dates_export = top_spikes[[
+                "rank", MERCHANT_COLUMN, MERCHANT_NAME_COLUMN, "spike_date",
+                "total_transactions", "declined_transactions", "decline_rate",
+                "baseline_decline_rate", "increase_pp", "relative_increase_pct"
+            ]].copy()
+            spike_dates_export["decline_rate"] *= 100
+            spike_dates_export["baseline_decline_rate"] *= 100
 
-                out_general = io.BytesIO()
-                with pd.ExcelWriter(out_general, engine="xlsxwriter") as writer:
-                    top_merchants_export.to_excel(writer, sheet_name="Top 10 Merchants", index=False)
-                    spike_dates_export.to_excel(writer, sheet_name="Spike Dates", index=False)
+            out_general = io.BytesIO()
+            with pd.ExcelWriter(out_general, engine="xlsxwriter") as writer:
+                top_merchants_export.to_excel(writer, sheet_name="Top 10 Merchants", index=False)
+                spike_dates_export.to_excel(writer, sheet_name="Spike Dates", index=False)
 
-                st.download_button(
-                    label="📥 Download Top 10 Spikes General Report (Excel)",
-                    data=out_general.getvalue(),
-                    file_name=GENERAL_REPORT_FILE,
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
+            st.download_button(
+                label="📥 Download Top 10 Spikes General Report (Excel)",
+                data=out_general.getvalue(),
+                file_name=GENERAL_REPORT_FILE,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
 
-                st.markdown("---")
-                st.subheader("🔬 Interactive Merchant Deep Analysis Selection")
+            st.markdown("---")
+            st.subheader("🔬 Interactive Merchant Deep Analysis Selection")
+            
+            merchant_options = [
+                f"Rank {row['rank']} | ID: {row[MERCHANT_COLUMN]} | Name: {row[MERCHANT_NAME_COLUMN]}" 
+                for _, row in top_merchants.iterrows()
+            ]
+            
+            selected_options = st.multiselect(
+                "Select Merchant(s) for Deep Analysis:",
+                options=merchant_options,
+                default=[]
+            )
+
+            if selected_options:
+                selected_ids = [opt.split("| ID: ")[1].split(" | Name:")[0].strip() for opt in selected_options]
                 
-                merchant_options = [
-                    f"Rank {row['rank']} | ID: {row[MERCHANT_COLUMN]} | Name: {row[MERCHANT_NAME_COLUMN]}" 
-                    for _, row in top_merchants.iterrows()
-                ]
-                
-                selected_options = st.multiselect(
-                    "Select Merchant(s) for Deep Analysis:",
-                    options=merchant_options,
-                    default=[]
-                )
+                if st.button("⚡ Run Deep Analysis for Selected Merchants", type="primary", key="m21_run_deep"):
+                    with st.spinner("Processing deep analytics, rule triggers, top emails, and geo matrices..."):
+                        rule_results, coverage_results, email_results, selected_spike_rows = [], [], [], []
+                        zip_buffer = io.BytesIO()
 
-                if selected_options:
-                    selected_ids = [opt.split("| ID: ")[1].split(" | Name:")[0].strip() for opt in selected_options]
-                    
-                    if st.button("⚡ Run Deep Analysis for Selected Merchants", type="primary", key="m21_run_deep"):
-                        with st.spinner("Processing deep analytics, rule triggers, top emails, and geo matrices..."):
-                            rule_results, coverage_results, email_results, selected_spike_rows = [], [], [], []
-                            zip_buffer = io.BytesIO()
+                        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+                            for sel_id in selected_ids:
+                                m_rows = top_merchants[top_merchants[MERCHANT_COLUMN].astype(str) == sel_id]
+                                if m_rows.empty:
+                                    continue
+                                m_row = m_rows.iloc[0]
+                                m_name = str(m_row[MERCHANT_NAME_COLUMN])
+                                m_rank = int(m_row["rank"])
 
-                            with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
-                                for sel_id in selected_ids:
-                                    m_rows = top_merchants[top_merchants[MERCHANT_COLUMN].astype(str) == sel_id]
-                                    if m_rows.empty:
-                                        continue
-                                    m_row = m_rows.iloc[0]
-                                    m_name = str(m_row[MERCHANT_NAME_COLUMN])
-                                    m_rank = int(m_row["rank"])
+                                m_spikes = top_spikes[top_spikes[MERCHANT_COLUMN].astype(str) == sel_id].copy()
+                                if m_spikes.empty: 
+                                    continue
 
-                                    m_spikes = top_spikes[top_spikes[MERCHANT_COLUMN].astype(str) == sel_id].copy()
-                                    if m_spikes.empty: 
-                                        continue
+                                spike_dates = pd.to_datetime(m_spikes["spike_date"]).dt.normalize().dropna().unique()
+                                spike_dates_sorted = sorted(pd.Timestamp(d).strftime("%Y-%m-%d") for d in spike_dates)
+                                spike_dates_label = ", ".join(spike_dates_sorted)
 
-                                    spike_dates = pd.to_datetime(m_spikes["spike_date"]).dt.normalize().dropna().unique()
-                                    spike_dates_sorted = sorted(pd.Timestamp(d).strftime("%Y-%m-%d") for d in spike_dates)
-                                    spike_dates_label = ", ".join(spike_dates_sorted)
-
-                                    for sd in spike_dates_sorted:
-                                        selected_spike_rows.append({
-                                            "rank": m_rank,
-                                            MERCHANT_COLUMN: sel_id,
-                                            MERCHANT_NAME_COLUMN: m_name,
-                                            "spike_date": sd
-                                        })
-
-                                    m_spike_declines = df_clean[
-                                        (df_clean[MERCHANT_COLUMN].astype(str) == sel_id) &
-                                        (df_clean[STATE_COLUMN] == DECLINE_STATE) &
-                                        (df_clean["_date_day"].isin(spike_dates))
-                                    ].copy()
-
-                                    total_declines = m_spike_declines["_transaction_key"].nunique()
-                                    if total_declines == 0:
-                                        continue
-
-                                    # 1. Declined Transaction Coverage
-                                    m_spike_declines["_parsed_rules"] = m_spike_declines[RULES_COLUMN].apply(parse_rule_ids)
-                                    m_spike_declines["_has_rule"] = m_spike_declines["_parsed_rules"].apply(len) > 0
-
-                                    decl_with_rules = m_spike_declines.loc[m_spike_declines["_has_rule"], "_transaction_key"].nunique()
-                                    decl_no_rules = m_spike_declines.loc[~m_spike_declines["_has_rule"], "_transaction_key"].nunique()
-
-                                    coverage_results.append({
+                                for sd in spike_dates_sorted:
+                                    selected_spike_rows.append({
                                         "rank": m_rank,
                                         MERCHANT_COLUMN: sel_id,
                                         MERCHANT_NAME_COLUMN: m_name,
-                                        "spike_dates": spike_dates_label,
-                                        "total_declined_transactions": total_declines,
-                                        "declined_transactions_with_rules": decl_with_rules,
-                                        "declined_transactions_without_rules": decl_no_rules,
-                                        "with_rules_pct": decl_with_rules / total_declines * 100 if total_declines else 0,
-                                        "without_rules_pct": decl_no_rules / total_declines * 100 if total_declines else 0
+                                        "spike_date": sd
                                     })
 
-                                    # 2. Top 10 Emails
-                                    email_data = m_spike_declines.copy()
-                                    email_data["email_for_analysis"] = email_data[EMAIL_COLUMN].fillna("").astype(str).str.strip().replace("", "[Missing email]")
-                                    email_counts = email_data.groupby("email_for_analysis")["_transaction_key"].nunique().sort_values(ascending=False).head(TOP_EMAILS_LIMIT).reset_index(name="declined_transactions")
-                                    email_counts.insert(0, "rank", m_rank)
-                                    email_counts[MERCHANT_COLUMN] = sel_id
-                                    email_counts[MERCHANT_NAME_COLUMN] = m_name
-                                    email_counts["spike_dates"] = spike_dates_label
-                                    email_results.append(email_counts)
+                                m_spike_declines = df_clean[
+                                    (df_clean[MERCHANT_COLUMN].astype(str) == sel_id) &
+                                    (df_clean[STATE_COLUMN] == DECLINE_STATE) &
+                                    (df_clean["_date_day"].isin(spike_dates))
+                                ].copy()
 
-                                    # 3. Top 10 Rules
-                                    rule_data = m_spike_declines[["_transaction_key", "_parsed_rules"]].explode("_parsed_rules").dropna()
-                                    rule_data = rule_data[rule_data["_parsed_rules"].astype(str).str.strip().ne("")].drop_duplicates()
+                                total_declines = m_spike_declines["_transaction_key"].nunique()
+                                if total_declines == 0:
+                                    continue
 
-                                    safe_id = re.sub(r"[^A-Za-z0-9_-]", "_", sel_id)
+                                # 1. Declined Transaction Coverage
+                                m_spike_declines["_parsed_rules"] = m_spike_declines[RULES_COLUMN].apply(parse_rule_ids)
+                                m_spike_declines["_has_rule"] = m_spike_declines["_parsed_rules"].apply(len) > 0
 
-                                    if not rule_data.empty:
-                                        rule_counts = rule_data.groupby("_parsed_rules")["_transaction_key"].nunique().sort_values(ascending=False).head(TOP_RULES_LIMIT).reset_index(name="declined_transactions_with_rule")
-                                        rule_counts["share_of_declines_pct"] = rule_counts["declined_transactions_with_rule"] / total_declines * 100 if total_declines else 0
-                                        rule_counts = rule_counts.rename(columns={"_parsed_rules": "rule_id"})
-                                        rule_counts["rule_name"] = rule_counts["rule_id"].apply(get_rule_name)
-                                        rule_counts.insert(0, "rank", m_rank)
-                                        rule_counts[MERCHANT_COLUMN] = sel_id
-                                        rule_counts[MERCHANT_NAME_COLUMN] = m_name
-                                        rule_counts["spike_dates"] = spike_dates_label
-                                        rule_results.append(rule_counts)
+                                decl_with_rules = m_spike_declines.loc[m_spike_declines["_has_rule"], "_transaction_key"].nunique()
+                                decl_no_rules = m_spike_declines.loc[~m_spike_declines["_has_rule"], "_transaction_key"].nunique()
 
-                                        # Generate Top Rules Chart for ZIP Export
-                                        fig, ax = plt.subplots(figsize=(10, 5))
-                                        chart_data = rule_counts.sort_values("declined_transactions_with_rule", ascending=True)
-                                        ax.barh(chart_data["rule_name"].astype(str), chart_data["declined_transactions_with_rule"], color="#2b5c8f")
-                                        ax.set_title(f"Top {TOP_RULES_LIMIT} Rules — Merchant: {m_name} ({sel_id})\nDates: {spike_dates_label}")
-                                        plt.tight_layout()
+                                coverage_results.append({
+                                    "rank": m_rank,
+                                    MERCHANT_COLUMN: sel_id,
+                                    MERCHANT_NAME_COLUMN: m_name,
+                                    "spike_dates": spike_dates_label,
+                                    "total_declined_transactions": total_declines,
+                                    "declined_transactions_with_rules": decl_with_rules,
+                                    "declined_transactions_without_rules": decl_no_rules,
+                                    "with_rules_pct": decl_with_rules / total_declines * 100 if total_declines else 0,
+                                    "without_rules_pct": decl_no_rules / total_declines * 100 if total_declines else 0
+                                })
 
-                                        img_buf = io.BytesIO()
-                                        plt.savefig(img_buf, format="png", dpi=150)
-                                        plt.close(fig)
-                                        zip_file.writestr(f"merchant_{safe_id}_top_rules.png", img_buf.getvalue())
+                                # 2. Top 10 Emails
+                                email_data = m_spike_declines.copy()
+                                email_data["email_for_analysis"] = email_data[EMAIL_COLUMN].fillna("").astype(str).str.strip().replace("", "[Missing email]")
+                                email_counts = email_data.groupby("email_for_analysis")["_transaction_key"].nunique().sort_values(ascending=False).head(TOP_EMAILS_LIMIT).reset_index(name="declined_transactions")
+                                email_counts.insert(0, "rank", m_rank)
+                                email_counts[MERCHANT_COLUMN] = sel_id
+                                email_counts[MERCHANT_NAME_COLUMN] = m_name
+                                email_counts["spike_dates"] = spike_dates_label
+                                email_results.append(email_counts)
 
-                                    # 4. Generate Card Country vs IP Country Heatmap for ZIP Export
-                                    if card_col and ip_col and card_col in m_spike_declines.columns and ip_col in m_spike_declines.columns:
-                                        ct = pd.crosstab(
-                                            m_spike_declines[card_col].replace("", np.nan).fillna("Unknown"),
-                                            m_spike_declines[ip_col].replace("", np.nan).fillna("Unknown")
-                                        )
+                                # 3. Top 10 Rules
+                                rule_data = m_spike_declines[["_transaction_key", "_parsed_rules"]].explode("_parsed_rules").dropna()
+                                rule_data = rule_data[rule_data["_parsed_rules"].astype(str).str.strip().ne("")].drop_duplicates()
 
-                                        if not ct.empty:
-                                            top_cards = m_spike_declines[card_col].replace("", np.nan).fillna("Unknown").value_counts().head(10).index
-                                            top_ips = m_spike_declines[ip_col].replace("", np.nan).fillna("Unknown").value_counts().head(10).index
-                                            ct_filtered = ct.loc[ct.index.isin(top_cards), ct.columns.isin(top_ips)]
+                                safe_id = re.sub(r"[^A-Za-z0-9_-]", "_", sel_id)
 
-                                            if not ct_filtered.empty:
-                                                fig_hm, ax_hm = plt.subplots(figsize=(9, 7))
-                                                sns.heatmap(ct_filtered, annot=True, fmt="d", cmap="YlGnBu", cbar=True, ax=ax_hm)
-                                                ax_hm.set_title(f"Card Country vs IP Country Heatmap (Spike Declines)\nMerchant: {m_name} | ID: {sel_id}")
-                                                ax_hm.set_xlabel("IP Country")
-                                                ax_hm.set_ylabel("Card Country")
-                                                plt.tight_layout()
+                                if not rule_data.empty:
+                                    rule_counts = rule_data.groupby("_parsed_rules")["_transaction_key"].nunique().sort_values(ascending=False).head(TOP_RULES_LIMIT).reset_index(name="declined_transactions_with_rule")
+                                    rule_counts["share_of_declines_pct"] = rule_counts["declined_transactions_with_rule"] / total_declines * 100 if total_declines else 0
+                                    rule_counts = rule_counts.rename(columns={"_parsed_rules": "rule_id"})
+                                    rule_counts["rule_name"] = rule_counts["rule_id"].apply(get_rule_name)
+                                    rule_counts.insert(0, "rank", m_rank)
+                                    rule_counts[MERCHANT_COLUMN] = sel_id
+                                    rule_counts[MERCHANT_NAME_COLUMN] = m_name
+                                    rule_counts["spike_dates"] = spike_dates_label
+                                    rule_results.append(rule_counts)
 
-                                                geo_buf = io.BytesIO()
-                                                plt.savefig(geo_buf, format="png", dpi=150)
-                                                plt.close(fig_hm)
-                                                zip_file.writestr(f"merchant_{safe_id}_geo_matrix.png", geo_buf.getvalue())
+                                    # Generate Top Rules Chart for ZIP Export
+                                    fig, ax = plt.subplots(figsize=(10, 5))
+                                    chart_data = rule_counts.sort_values("declined_transactions_with_rule", ascending=True)
+                                    ax.barh(chart_data["rule_name"].astype(str), chart_data["declined_transactions_with_rule"], color="#2b5c8f")
+                                    ax.set_title(f"Top {TOP_RULES_LIMIT} Rules — Merchant: {m_name} ({sel_id})\nDates: {spike_dates_label}")
+                                    plt.tight_layout()
 
-                            zip_buffer.seek(0)
+                                    img_buf = io.BytesIO()
+                                    plt.savefig(img_buf, format="png", dpi=150)
+                                    plt.close(fig)
+                                    zip_file.writestr(f"merchant_{safe_id}_top_rules.png", img_buf.getvalue())
 
-                            deep_spike_df = pd.DataFrame(selected_spike_rows)
-                            deep_coverage_df = pd.DataFrame(coverage_results)
-                            deep_rules_df = pd.concat(rule_results, ignore_index=True) if rule_results else pd.DataFrame()
-                            deep_emails_df = pd.concat(email_results, ignore_index=True) if email_results else pd.DataFrame()
+                                # 4. Generate Card Country vs IP Country Heatmap for ZIP Export
+                                if card_col and ip_col and card_col in m_spike_declines.columns and ip_col in m_spike_declines.columns:
+                                    ct = pd.crosstab(
+                                        m_spike_declines[card_col].replace("", np.nan).fillna("Unknown"),
+                                        m_spike_declines[ip_col].replace("", np.nan).fillna("Unknown")
+                                    )
 
-                            st.success("Deep Analysis Completed Successfully!")
+                                    if not ct.empty:
+                                        top_cards = m_spike_declines[card_col].replace("", np.nan).fillna("Unknown").value_counts().head(10).index
+                                        top_ips = m_spike_declines[ip_col].replace("", np.nan).fillna("Unknown").value_counts().head(10).index
+                                        ct_filtered = ct.loc[ct.index.isin(top_cards), ct.columns.isin(top_ips)]
 
-                            if not deep_rules_df.empty:
-                                st.write("#### 📊 Top Triggered Rules Preview")
-                                st.dataframe(deep_rules_df, use_container_width=True)
+                                        if not ct_filtered.empty:
+                                            fig_hm, ax_hm = plt.subplots(figsize=(9, 7))
+                                            sns.heatmap(ct_filtered, annot=True, fmt="d", cmap="YlGnBu", cbar=True, ax=ax_hm)
+                                            ax_hm.set_title(f"Card Country vs IP Country Heatmap (Spike Declines)\nMerchant: {m_name} | ID: {sel_id}")
+                                            ax_hm.set_xlabel("IP Country")
+                                            ax_hm.set_ylabel("Card Country")
+                                            plt.tight_layout()
 
-                            if not deep_emails_df.empty:
-                                st.write("#### ✉️ Top Declined Payer Emails Preview")
-                                st.dataframe(deep_emails_df, use_container_width=True)
+                                            geo_buf = io.BytesIO()
+                                            plt.savefig(geo_buf, format="png", dpi=150)
+                                            plt.close(fig_hm)
+                                            zip_file.writestr(f"merchant_{safe_id}_geo_matrix.png", geo_buf.getvalue())
 
-                            col_dl1, col_dl2 = st.columns(2)
-                            with col_dl1:
-                                output_deep = io.BytesIO()
-                                with pd.ExcelWriter(output_deep, engine="xlsxwriter") as writer:
-                                    if not deep_spike_df.empty:
-                                        deep_spike_df.to_excel(writer, sheet_name="Selected Spike Dates", index=False)
-                                    if not deep_rules_df.empty: 
-                                        deep_rules_df.to_excel(writer, sheet_name="Top Rules per Merchant", index=False)
-                                    if not deep_coverage_df.empty: 
-                                        deep_coverage_df.to_excel(writer, sheet_name="Declined Transaction Coverage", index=False)
-                                    if not deep_emails_df.empty: 
-                                        deep_emails_df.to_excel(writer, sheet_name="Top Declined Emails", index=False)
+                        zip_buffer.seek(0)
 
-                                st.download_button(
-                                    label="📥 Download Selected Deep Analysis Excel",
-                                    data=output_deep.getvalue(),
-                                    file_name=DEEP_REPORT_FILE,
-                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                                )
-                            with col_dl2:
-                                st.download_button(
-                                    label="📦 Download Rule & Geo Charts ZIP",
-                                    data=zip_buffer.getvalue(),
-                                    file_name=CHARTS_ZIP_FILE,
-                                    mime="application/zip"
-                                )
+                        deep_spike_df = pd.DataFrame(selected_spike_rows)
+                        deep_coverage_df = pd.DataFrame(coverage_results)
+                        deep_rules_df = pd.concat(rule_results, ignore_index=True) if rule_results else pd.DataFrame()
+                        deep_emails_df = pd.concat(email_results, ignore_index=True) if email_results else pd.DataFrame()
+
+                        st.success("Deep Analysis Completed Successfully!")
+
+                        if not deep_rules_df.empty:
+                            st.write("#### 📊 Top Triggered Rules Preview")
+                            st.dataframe(deep_rules_df, use_container_width=True)
+
+                        if not deep_emails_df.empty:
+                            st.write("#### ✉️ Top Declined Payer Emails Preview")
+                            st.dataframe(deep_emails_df, use_container_width=True)
+
+                        col_dl1, col_dl2 = st.columns(2)
+                        with col_dl1:
+                            output_deep = io.BytesIO()
+                            with pd.ExcelWriter(output_deep, engine="xlsxwriter") as writer:
+                                if not deep_spike_df.empty:
+                                    deep_spike_df.to_excel(writer, sheet_name="Selected Spike Dates", index=False)
+                                if not deep_rules_df.empty: 
+                                    deep_rules_df.to_excel(writer, sheet_name="Top Rules per Merchant", index=False)
+                                if not deep_coverage_df.empty: 
+                                    deep_coverage_df.to_excel(writer, sheet_name="Declined Transaction Coverage", index=False)
+                                if not deep_emails_df.empty: 
+                                    deep_emails_df.to_excel(writer, sheet_name="Top Declined Emails", index=False)
+
+                            st.download_button(
+                                label="📥 Download Selected Deep Analysis Excel",
+                                data=output_deep.getvalue(),
+                                file_name=DEEP_REPORT_FILE,
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                            )
+                        with col_dl2:
+                            st.download_button(
+                                label="📦 Download Rule & Geo Charts ZIP",
+                                data=zip_buffer.getvalue(),
+                                file_name=CHARTS_ZIP_FILE,
+                                mime="application/zip"
+                            )
                             
     elif sub_module == "2.2 Single Merchant Historical Analysis":
         st.title("🔍 Single Merchant Deep Analysis")
