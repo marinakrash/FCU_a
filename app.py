@@ -596,6 +596,7 @@ elif module == "2. Acquiring Monitoring":
                                     if m_spikes.empty: 
                                         continue
 
+                                    # Extract unique spike dates for the current merchant
                                     spike_dates = pd.to_datetime(m_spikes["spike_date"]).dt.normalize().dropna().unique()
                                     spike_dates_sorted = sorted(pd.Timestamp(d).strftime("%Y-%m-%d") for d in spike_dates)
                                     spike_dates_label = ", ".join(spike_dates_sorted)
@@ -608,6 +609,7 @@ elif module == "2. Acquiring Monitoring":
                                             "spike_date": sd
                                         })
 
+                                    # Filter declined transactions on spike dates
                                     m_spike_declines = df_clean[
                                         (df_clean[MERCHANT_COLUMN].astype(str) == sel_id) &
                                         (df_clean[STATE_COLUMN] == DECLINE_STATE) &
@@ -616,7 +618,7 @@ elif module == "2. Acquiring Monitoring":
 
                                     total_declines = m_spike_declines["_transaction_key"].nunique()
 
-                                    # Coverage Analysis
+                                    # 1. Rule Coverage Analysis
                                     m_spike_declines["_parsed_rules"] = m_spike_declines[RULES_COLUMN].apply(parse_rule_ids)
                                     m_spike_declines["_has_rule"] = m_spike_declines["_parsed_rules"].apply(len) > 0
 
@@ -624,14 +626,18 @@ elif module == "2. Acquiring Monitoring":
                                     decl_no_rules = m_spike_declines.loc[~m_spike_declines["_has_rule"], "_transaction_key"].nunique()
 
                                     coverage_results.append({
-                                        "rank": m_rank, MERCHANT_COLUMN: sel_id, MERCHANT_NAME_COLUMN: m_name,
-                                        "spike_dates": spike_dates_label, "total_declined_transactions": total_declines,
-                                        "declined_transactions_with_rules": decl_with_rules, "declined_transactions_without_rules": decl_no_rules,
+                                        "rank": m_rank, 
+                                        MERCHANT_COLUMN: sel_id, 
+                                        MERCHANT_NAME_COLUMN: m_name,
+                                        "spike_dates": spike_dates_label, 
+                                        "total_declined_transactions": total_declines,
+                                        "declined_transactions_with_rules": decl_with_rules, 
+                                        "declined_transactions_without_rules": decl_no_rules,
                                         "with_rules_pct": decl_with_rules / total_declines * 100 if total_declines else 0,
                                         "without_rules_pct": decl_no_rules / total_declines * 100 if total_declines else 0
                                     })
 
-                                    # Top Emails
+                                    # 2. Top 10 Declined Emails Analysis
                                     email_data = m_spike_declines.copy()
                                     email_data["email_for_analysis"] = email_data[EMAIL_COLUMN].fillna("").astype(str).str.strip().replace("", "[Missing email]")
                                     email_counts = email_data.groupby("email_for_analysis")["_transaction_key"].nunique().sort_values(ascending=False).head(TOP_EMAILS_LIMIT).reset_index(name="declined_transactions")
@@ -641,7 +647,7 @@ elif module == "2. Acquiring Monitoring":
                                     email_counts["spike_dates"] = spike_dates_label
                                     email_results.append(email_counts)
 
-                                    # Top Rules
+                                    # 3. Top 10 Triggered Rules Breakdown with Repository Names
                                     rule_data = m_spike_declines[["_transaction_key", "_parsed_rules"]].explode("_parsed_rules").dropna()
                                     rule_data = rule_data[rule_data["_parsed_rules"].astype(str).str.strip().ne("")].drop_duplicates()
 
@@ -656,7 +662,7 @@ elif module == "2. Acquiring Monitoring":
                                         rule_counts["spike_dates"] = spike_dates_label
                                         rule_results.append(rule_counts)
 
-                                        # Generate Chart for ZIP
+                                        # Generate Top Rules Chart for ZIP Export
                                         fig, ax = plt.subplots(figsize=(10, 5))
                                         chart_data = rule_counts.sort_values("declined_transactions_with_rule", ascending=True)
                                         ax.barh(chart_data["rule_name"].astype(str), chart_data["declined_transactions_with_rule"], color="#2b5c8f")
@@ -671,7 +677,7 @@ elif module == "2. Acquiring Monitoring":
 
                             zip_buffer.seek(0)
 
-                            # Deep Analysis Tables
+                            # Build DataFrames for display and export
                             deep_spike_df = pd.DataFrame(selected_spike_rows)
                             deep_coverage_df = pd.DataFrame(coverage_results)
                             deep_rules_df = pd.concat(rule_results, ignore_index=True) if rule_results else pd.DataFrame()
