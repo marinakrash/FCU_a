@@ -391,90 +391,91 @@ elif module == "2. Acquiring Monitoring":
     
     if sub_module == "2.1 Spike Monitoring (Top 10 Merchants)":
         st.title("📉 Acquiring Merchant Decline Spike Monitoring")
-        st.write("Full pipeline for detecting merchant decline spikes, deep rule coverage analysis, and generating Excel/ZIP reports.")
+        st.write("Detect decline rate spikes across merchants (last 7 days vs 21+ active days baseline) and run deep analysis.")
         
-        up_file = st.file_uploader("Upload SEON Acquiring Export (Excel/CSV):", type=["xlsx", "csv"])
+        up_file = st.file_uploader("Upload SEON Acquiring Export (Excel/CSV):", type=["xlsx", "csv"], key="m21_upload")
+        
         if up_file:
-            df = load_data(up_file)
-            st.success(f"Loaded records from file: {len(df):,}")
-            
-            # --- 1. SETTINGS & COLUMN NAMES ---
-            MONITORING_DAYS = 7
-            MIN_BASELINE_ACTIVE_DAYS = 21
-            DECLINE_THRESHOLD = 0.06
-            TOP_MERCHANTS_LIMIT = 10
-            TOP_RULES_LIMIT = 10
-            TOP_EMAILS_LIMIT = 10
+            if st.button("🚀 Run Spike Detection", type="primary", key="m21_run_screening"):
+                with st.spinner("Analyzing baseline and detecting decline spikes..."):
+                    df = load_data(up_file)
+                    
+                    req_cols = [DATE_COLUMN, STATE_COLUMN, MERCHANT_COLUMN, TRANSACTION_ID_COLUMN, RULES_COLUMN, EMAIL_COLUMN, MERCHANT_NAME_COLUMN]
+                    missing = [c for c in req_cols if c not in df.columns]
+                    if missing:
+                        st.error(f"Missing required columns in uploaded file: {', '.join(missing)}")
+                        st.stop()
+                        
+                    card_col = "bin_country_code"
+                    if card_col not in df.columns:
+                        candidates = [c for c in df.columns if c.lower() in ["bin_country_code", "bin_country", "country", "card_country"]]
+                        card_col = candidates[0] if candidates else None
 
-            DATE_COLUMN = "date"
-            STATE_COLUMN = "state"
-            MERCHANT_COLUMN = "merchant_id"
-            MERCHANT_NAME_COLUMN = "user_fullname"
-            TRANSACTION_ID_COLUMN = "transaction_id"
-            RULES_COLUMN = "applied_rule_ids"
-            EMAIL_COLUMN = "email/email"
-            DECLINE_STATE = "DECLINE"
+                    ip_col = "ip_country"
+                    if ip_col not in df.columns:
+                        candidates_ip = [c for c in df.columns if c.lower() in ["ip_country", "ipcountry"]]
+                        ip_col = candidates_ip[0] if candidates_ip else None
 
-            # Validate Required Columns
-            required_cols = [DATE_COLUMN, STATE_COLUMN, MERCHANT_COLUMN, TRANSACTION_ID_COLUMN, RULES_COLUMN, EMAIL_COLUMN, MERCHANT_NAME_COLUMN]
-            missing_cols = [col for col in required_cols if col not in df.columns]
-            
-            if missing_cols:
-                st.error(f"Missing required columns in upload: {missing_cols}")
-            else:
-                # --- 2. CLEAN DATA ---
-                df_clean = df.copy()
-                df_clean["_date_day"] = pd.to_datetime(df_clean[DATE_COLUMN].astype(str).str[:10], errors="coerce").dt.normalize()
-                df_clean[STATE_COLUMN] = df_clean[STATE_COLUMN].fillna("").astype(str).str.strip().str.upper()
-                df_clean[MERCHANT_COLUMN] = df_clean[MERCHANT_COLUMN].fillna("").astype(str).str.strip()
-                df_clean[MERCHANT_NAME_COLUMN] = df_clean[MERCHANT_NAME_COLUMN].fillna("").astype(str).str.strip()
-                df_clean[TRANSACTION_ID_COLUMN] = df_clean[TRANSACTION_ID_COLUMN].fillna("").astype(str).str.strip()
+                    df_clean = df.copy()
+                    df_clean["_date_day"] = pd.to_datetime(df_clean[DATE_COLUMN].astype(str).str[:10], errors="coerce").dt.normalize()
+                    df_clean[STATE_COLUMN] = df_clean[STATE_COLUMN].fillna("").astype(str).str.strip().str.upper()
+                    df_clean[MERCHANT_COLUMN] = df_clean[MERCHANT_COLUMN].fillna("").astype(str).str.strip()
+                    df_clean[MERCHANT_NAME_COLUMN] = df_clean[MERCHANT_NAME_COLUMN].fillna("").astype(str).str.strip()
+                    df_clean[TRANSACTION_ID_COLUMN] = df_clean[TRANSACTION_ID_COLUMN].fillna("").astype(str).str.strip()
 
-                df_clean = df_clean[df_clean["_date_day"].notna() & df_clean[MERCHANT_COLUMN].ne("")].copy()
+                    df_clean = df_clean[df_clean["_date_day"].notna() & df_clean[MERCHANT_COLUMN].ne("")].copy()
+                    
+                    df_clean["_transaction_key"] = df_clean[TRANSACTION_ID_COLUMN]
+                    missing_tx = df_clean["_transaction_key"].eq("")
+                    df_clean.loc[missing_tx, "_transaction_key"] = [f"_missing_tx_{i}" for i in df_clean.index[missing_tx]]
 
-                df_clean["_transaction_key"] = df_clean[TRANSACTION_ID_COLUMN]
-                missing_tx_id = df_clean["_transaction_key"].eq("")
-                df_clean.loc[missing_tx_id, "_transaction_key"] = [f"_missing_tx_{i}" for i in df_clean.index[missing_tx_id]]
+                    df_clean = df_clean.drop_duplicates(subset=["_transaction_key"], keep="first").copy()
+                    df_clean = df_clean[df_clean[STATE_COLUMN].isin(["APPROVE", "DECLINE"])].copy()
 
-                df_clean = df_clean.drop_duplicates(subset=["_transaction_key"], keep="first").copy()
-                df_clean = df_clean[df_clean[STATE_COLUMN].isin(["APPROVE", "DECLINE"])].copy()
+                    latest_date = df_clean["_date_day"].max()
+                    monitoring_start = latest_date - pd.Timedelta(days=MONITORING_DAYS - 1)
 
-                latest_date = df_clean["_date_day"].max()
-                monitoring_start = latest_date - pd.Timedelta(days=MONITORING_DAYS - 1)
-                baseline_end = monitoring_start - pd.Timedelta(days=1)
+                    monitoring_df = df_clean[(df_clean["_date_day"] >= monitoring_start) & (df_clean["_date_day"] <= latest_date)].copy()
+                    baseline_df = df_clean[df_clean["_date_day"] < monitoring_start].copy()
 
-                monitoring_df = df_clean[(df_clean["_date_day"] >= monitoring_start) & (df_clean["_date_day"] <= latest_date)].copy()
-                baseline_df = df_clean[df_clean["_date_day"] < monitoring_start].copy()
+                    if monitoring_df.empty or baseline_df.empty:
+                        st.error("Insufficient historical or monitoring data to compute baseline.")
+                        st.stop()
 
-                st.info(f"📅 **Monitoring Window:** {monitoring_start.date()} to {latest_date.date()} | **Baseline Period Ends:** {baseline_end.date()}")
+                    baseline_stats = baseline_df.groupby(MERCHANT_COLUMN).agg(
+                        baseline_transactions=("_transaction_key", "nunique"),
+                        baseline_declines=(STATE_COLUMN, lambda s: (s == DECLINE_STATE).sum()),
+                        baseline_active_days=("_date_day", "nunique"),
+                    ).reset_index()
+                    baseline_stats["baseline_decline_rate"] = baseline_stats["baseline_declines"] / baseline_stats["baseline_transactions"]
 
-                # --- 3. CALCULATE BASELINE & DAILY STATS ---
-                baseline_stats = baseline_df.groupby(MERCHANT_COLUMN).agg(
-                    baseline_transactions=("_transaction_key", "nunique"),
-                    baseline_declines=(STATE_COLUMN, lambda s: (s == DECLINE_STATE).sum()),
-                    baseline_active_days=("_date_day", "nunique"),
-                ).reset_index()
-                baseline_stats["baseline_decline_rate"] = baseline_stats["baseline_declines"] / baseline_stats["baseline_transactions"]
+                    eligible_merchants = baseline_stats[baseline_stats["baseline_active_days"] >= MIN_BASELINE_ACTIVE_DAYS].copy()
+                    eligible_ids = set(eligible_merchants[MERCHANT_COLUMN])
 
-                eligible_merchants = baseline_stats[baseline_stats["baseline_active_days"] >= MIN_BASELINE_ACTIVE_DAYS].copy()
-                eligible_ids = set(eligible_merchants[MERCHANT_COLUMN])
+                    monitoring_eligible = monitoring_df[monitoring_df[MERCHANT_COLUMN].isin(eligible_ids)].copy()
 
-                monitoring_eligible = monitoring_df[monitoring_df[MERCHANT_COLUMN].isin(eligible_ids)].copy()
+                    daily_stats = monitoring_eligible.groupby([MERCHANT_COLUMN, "_date_day"]).agg(
+                        total_transactions=("_transaction_key", "nunique"),
+                        declined_transactions=(STATE_COLUMN, lambda s: (s == DECLINE_STATE).sum()),
+                    ).reset_index()
+                    daily_stats["decline_rate"] = daily_stats["declined_transactions"] / daily_stats["total_transactions"]
 
-                daily_stats = monitoring_eligible.groupby([MERCHANT_COLUMN, "_date_day"]).agg(
-                    total_transactions=("_transaction_key", "nunique"),
-                    declined_transactions=(STATE_COLUMN, lambda s: (s == DECLINE_STATE).sum()),
-                ).reset_index()
+                    daily_stats = daily_stats.merge(
+                        eligible_merchants[[MERCHANT_COLUMN, "baseline_transactions", "baseline_declines", "baseline_active_days", "baseline_decline_rate"]],
+                        on=MERCHANT_COLUMN,
+                        how="left"
+                    )
 
-                daily_stats["decline_rate"] = daily_stats["declined_transactions"] / daily_stats["total_transactions"]
-                daily_stats = daily_stats.merge(eligible_merchants[[MERCHANT_COLUMN, "baseline_transactions", "baseline_declines", "baseline_active_days", "baseline_decline_rate"]], on=MERCHANT_COLUMN, how="left")
+                    spikes = daily_stats[
+                        (daily_stats["total_transactions"] >= MIN_SPIKE_TRANSACTIONS) &
+                        (daily_stats["decline_rate"] > DECLINE_THRESHOLD) &
+                        (daily_stats["decline_rate"] > daily_stats["baseline_decline_rate"])
+                    ].copy()
 
-                # --- 4. IDENTIFY SPIKES & RANK TOP 10 ---
-                spikes = daily_stats[(daily_stats["decline_rate"] > DECLINE_THRESHOLD) & (daily_stats["decline_rate"] > daily_stats["baseline_decline_rate"])].copy()
+                    if spikes.empty:
+                        st.warning("No merchants met the spike criteria (> 6% decline rate and above baseline).")
+                        st.stop()
 
-                if spikes.empty:
-                    st.warning("No spikes detected with decline rate > 6% and strictly above merchant baseline.")
-                else:
                     spikes["increase_pp"] = (spikes["decline_rate"] - spikes["baseline_decline_rate"]) * 100
                     spikes["relative_increase"] = np.where(
                         spikes["baseline_decline_rate"] > 0,
@@ -489,9 +490,9 @@ elif module == "2. Acquiring Monitoring":
                         merchant_spikes = merchant_spikes.sort_values(["relative_increase", "increase_pp", "decline_rate"], ascending=False)
                         max_spike = merchant_spikes.iloc[0]
 
-                        name_values = monitoring_eligible.loc[monitoring_eligible[MERCHANT_COLUMN] == merchant_id, MERCHANT_NAME_COLUMN].dropna().astype(str)
-                        name_values = name_values[name_values.str.strip().ne("")]
-                        merchant_name = name_values.mode().iloc[0] if not name_values.empty else ""
+                        name_vals = monitoring_eligible.loc[monitoring_eligible[MERCHANT_COLUMN] == merchant_id, MERCHANT_NAME_COLUMN].dropna().astype(str)
+                        name_vals = name_vals[name_vals.str.strip().ne("")]
+                        merchant_name = name_vals.mode().iloc[0] if not name_vals.empty else ""
 
                         rank_rows.append({
                             MERCHANT_COLUMN: merchant_id,
@@ -507,84 +508,80 @@ elif module == "2. Acquiring Monitoring":
                             "total_spike_declines": int(merchant_spikes["declined_transactions"].sum()),
                         })
 
-                    top_merchants = pd.DataFrame(rank_rows).sort_values(["max_relative_increase", "max_spike_increase_pp"], ascending=False).head(TOP_MERCHANTS_LIMIT).reset_index(drop=True)
-                    top_merchants.insert(0, "rank", range(1, len(top_merchants) + 1))
+                    top_merchants = pd.DataFrame(rank_rows).sort_values(
+                        ["max_relative_increase", "max_spike_increase_pp", "max_spike_decline_rate"],
+                        ascending=False
+                    ).head(TOP_MERCHANTS_LIMIT).reset_index(drop=True)
 
+                    top_merchants.insert(0, "rank", range(1, len(top_merchants) + 1))
                     top_merchant_ids = set(top_merchants[MERCHANT_COLUMN].astype(str))
                     top_spikes = spikes[spikes[MERCHANT_COLUMN].astype(str).isin(top_merchant_ids)].copy()
 
-                    rank_map = dict(zip(top_merchants[MERCHANT_COLUMN].astype(str), top_merchants["rank"]))
-                    name_map = dict(zip(top_merchants[MERCHANT_COLUMN].astype(str), top_merchants[MERCHANT_NAME_COLUMN]))
-                    top_spikes["rank"] = top_spikes[MERCHANT_COLUMN].astype(str).map(rank_map)
-                    top_spikes[MERCHANT_NAME_COLUMN] = top_spikes[MERCHANT_COLUMN].astype(str).map(name_map)
+                    st.session_state["m21_processed"] = True
+                    st.session_state["m21_df_clean"] = df_clean
+                    st.session_state["m21_top_merchants"] = top_merchants
+                    st.session_state["m21_top_spikes"] = top_spikes
+                    st.session_state["m21_card_col"] = card_col
+                    st.session_state["m21_ip_col"] = ip_col
 
-                    st.subheader("🏆 Top 10 Spiking Merchants Summary")
-                    st.dataframe(top_merchants, use_container_width=True)
+            if st.session_state.get("m21_processed", False):
+                top_merchants = st.session_state["m21_top_merchants"]
+                top_spikes = st.session_state["m21_top_spikes"]
+                df_clean = st.session_state["m21_df_clean"]
+                card_col = st.session_state["m21_card_col"]
+                ip_col = st.session_state["m21_ip_col"]
 
-                    # --- EXPORT GENERAL REPORT ---
-                    top_merchants_export = top_merchants.copy()
-                    top_merchants_export["baseline_decline_rate"] *= 100
-                    top_merchants_export["max_spike_decline_rate"] *= 100
-                    top_merchants_export = top_merchants_export.rename(columns={"baseline_decline_rate": "baseline_decline_rate_pct", "max_spike_decline_rate": "max_spike_decline_rate_pct"})
+                st.subheader("🏆 Top 10 Spiking Merchants Summary")
+                st.dataframe(top_merchants, use_container_width=True)
 
-                    spike_dates_export = top_spikes[["rank", MERCHANT_COLUMN, MERCHANT_NAME_COLUMN, "spike_date", "total_transactions", "declined_transactions", "decline_rate", "baseline_decline_rate", "increase_pp", "relative_increase_pct"]].copy()
-                    spike_dates_export["decline_rate"] *= 100
-                    spike_dates_export["baseline_decline_rate"] *= 100
-                    spike_dates_export = spike_dates_export.rename(columns={"spike_date": "date", "decline_rate": "decline_rate_pct", "baseline_decline_rate": "baseline_decline_rate_pct", "increase_pp": "increase_percentage_points"}).sort_values(["rank", "date"])
+                top_merchants_export = top_merchants.copy()
+                top_merchants_export["baseline_decline_rate"] *= 100
+                top_merchants_export["max_spike_decline_rate"] *= 100
 
-                    output_gen = io.BytesIO()
-                    with pd.ExcelWriter(output_gen, engine="xlsxwriter") as writer:
-                        top_merchants_export.to_excel(writer, sheet_name="Top 10 Merchants", index=False)
-                        spike_dates_export.to_excel(writer, sheet_name="Spike Dates", index=False)
+                spike_dates_export = top_spikes[[
+                    "rank", MERCHANT_COLUMN, MERCHANT_NAME_COLUMN, "spike_date",
+                    "total_transactions", "declined_transactions", "decline_rate",
+                    "baseline_decline_rate", "increase_pp", "relative_increase_pct"
+                ]].copy()
+                spike_dates_export["decline_rate"] *= 100
+                spike_dates_export["baseline_decline_rate"] *= 100
 
-                    st.download_button(
-                        label="📥 Download General Report (SEON_Top10_Merchant_Decline_Spikes.xlsx)",
-                        data=output_gen.getvalue(),
-                        file_name="SEON_Top10_Merchant_Decline_Spikes.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                    )
+                out_general = io.BytesIO()
+                with pd.ExcelWriter(out_general, engine="xlsxwriter") as writer:
+                    top_merchants_export.to_excel(writer, sheet_name="Top 10 Merchants", index=False)
+                    spike_dates_export.to_excel(writer, sheet_name="Spike Dates", index=False)
 
-                    # --- TIMELINE CHARTS ---
-                    st.subheader("📈 Historical Timeline Charts (Top 10 Merchants)")
-                    min_date = df_clean["_date_day"].min()
-                    full_dates = pd.date_range(start=min_date, end=latest_date, freq="D")
+                st.download_button(
+                    label="📥 Download Top 10 Spikes General Report (Excel)",
+                    data=out_general.getvalue(),
+                    file_name=GENERAL_REPORT_FILE,
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
 
-                    all_daily_stats = df_clean[df_clean[MERCHANT_COLUMN].isin(eligible_ids)].groupby([MERCHANT_COLUMN, "_date_day"]).agg(
-                        total_transactions=("_transaction_key", "nunique"),
-                        declined_transactions=(STATE_COLUMN, lambda s: (s == DECLINE_STATE).sum()),
-                    ).reset_index()
-                    all_daily_stats["decline_rate"] = all_daily_stats["declined_transactions"] / all_daily_stats["total_transactions"]
+                st.markdown("---")
+                st.subheader("🔬 Interactive Merchant Deep Analysis Selection")
+                
+                merchant_options = [
+                    f"Rank {row['rank']} | ID: {row[MERCHANT_COLUMN]} | Name: {row[MERCHANT_NAME_COLUMN]}" 
+                    for _, row in top_merchants.iterrows()
+                ]
+                
+                selected_options = st.multiselect(
+                    "Select Merchant(s) for Deep Analysis:",
+                    options=merchant_options,
+                    default=[]
+                )
 
-                    for _, merchant_row in top_merchants.iterrows():
-                        m_id = str(merchant_row[MERCHANT_COLUMN])
-                        m_name = str(merchant_row[MERCHANT_NAME_COLUMN])
-                        m_daily = all_daily_stats[all_daily_stats[MERCHANT_COLUMN].astype(str) == m_id].copy().set_index("_date_day")
-                        chart_rates = m_daily["decline_rate"].reindex(full_dates)
-
-                        fig = px.line(x=full_dates, y=chart_rates * 100, title=f"Merchant: {m_name} | ID: {m_id}")
-                        fig.add_vrect(x0=monitoring_start, x1=latest_date, fillcolor="rgba(255,0,0,0.15)", line_width=0, annotation_text="Monitoring Window")
-                        fig.add_hline(y=float(merchant_row["baseline_decline_rate"]) * 100, line_dash="dash", line_color="green", annotation_text=f"Baseline ({float(merchant_row['baseline_decline_rate']) * 100:.2f}%)")
-                        fig.add_hline(y=6.0, line_dash="dot", line_color="red", annotation_text="Threshold 6%")
-                        st.plotly_chart(fig, use_container_width=True)
-
-                    # --- DEEP ANALYSIS SECTION FOR SELECTED MERCHANTS ---
-                    st.markdown("---")
-                    st.subheader("🔬 Selected Merchants Deep Analysis")
+                if selected_options:
+                    selected_ids = [opt.split("| ID: ")[1].split(" | Name:")[0].strip() for opt in selected_options]
                     
-                    available_options = top_merchants[MERCHANT_COLUMN].astype(str).tolist()
-                    selected_m_ids = st.multiselect(
-                        "Select Merchant IDs for Deep Analysis:", 
-                        options=available_options, 
-                        default=available_options[:1] if available_options else []
-                    )
-
-                    if selected_m_ids:
-                        with st.spinner("Processing deep analytics and generating rule charts..."):
+                    if st.button("⚡ Run Deep Analysis for Selected Merchants", type="primary", key="m21_run_deep"):
+                        with st.spinner("Processing deep analytics, rule triggers, top emails, and geo matrices..."):
                             rule_results, coverage_results, email_results, selected_spike_rows = [], [], [], []
                             zip_buffer = io.BytesIO()
 
                             with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
-                                for sel_id in selected_m_ids:
+                                for sel_id in selected_ids:
                                     m_rows = top_merchants[top_merchants[MERCHANT_COLUMN].astype(str) == sel_id]
                                     if m_rows.empty:
                                         continue
@@ -596,20 +593,18 @@ elif module == "2. Acquiring Monitoring":
                                     if m_spikes.empty: 
                                         continue
 
-                                    # Extract unique spike dates for the current merchant
                                     spike_dates = pd.to_datetime(m_spikes["spike_date"]).dt.normalize().dropna().unique()
                                     spike_dates_sorted = sorted(pd.Timestamp(d).strftime("%Y-%m-%d") for d in spike_dates)
                                     spike_dates_label = ", ".join(spike_dates_sorted)
 
                                     for sd in spike_dates_sorted:
                                         selected_spike_rows.append({
-                                            "rank": m_rank, 
-                                            MERCHANT_COLUMN: sel_id, 
-                                            MERCHANT_NAME_COLUMN: m_name, 
+                                            "rank": m_rank,
+                                            MERCHANT_COLUMN: sel_id,
+                                            MERCHANT_NAME_COLUMN: m_name,
                                             "spike_date": sd
                                         })
 
-                                    # Filter declined transactions on spike dates
                                     m_spike_declines = df_clean[
                                         (df_clean[MERCHANT_COLUMN].astype(str) == sel_id) &
                                         (df_clean[STATE_COLUMN] == DECLINE_STATE) &
@@ -617,8 +612,10 @@ elif module == "2. Acquiring Monitoring":
                                     ].copy()
 
                                     total_declines = m_spike_declines["_transaction_key"].nunique()
+                                    if total_declines == 0:
+                                        continue
 
-                                    # 1. Rule Coverage Analysis
+                                    # 1. Declined Transaction Coverage
                                     m_spike_declines["_parsed_rules"] = m_spike_declines[RULES_COLUMN].apply(parse_rule_ids)
                                     m_spike_declines["_has_rule"] = m_spike_declines["_parsed_rules"].apply(len) > 0
 
@@ -626,18 +623,18 @@ elif module == "2. Acquiring Monitoring":
                                     decl_no_rules = m_spike_declines.loc[~m_spike_declines["_has_rule"], "_transaction_key"].nunique()
 
                                     coverage_results.append({
-                                        "rank": m_rank, 
-                                        MERCHANT_COLUMN: sel_id, 
+                                        "rank": m_rank,
+                                        MERCHANT_COLUMN: sel_id,
                                         MERCHANT_NAME_COLUMN: m_name,
-                                        "spike_dates": spike_dates_label, 
+                                        "spike_dates": spike_dates_label,
                                         "total_declined_transactions": total_declines,
-                                        "declined_transactions_with_rules": decl_with_rules, 
+                                        "declined_transactions_with_rules": decl_with_rules,
                                         "declined_transactions_without_rules": decl_no_rules,
                                         "with_rules_pct": decl_with_rules / total_declines * 100 if total_declines else 0,
                                         "without_rules_pct": decl_no_rules / total_declines * 100 if total_declines else 0
                                     })
 
-                                    # 2. Top 10 Declined Emails Analysis
+                                    # 2. Top 10 Emails
                                     email_data = m_spike_declines.copy()
                                     email_data["email_for_analysis"] = email_data[EMAIL_COLUMN].fillna("").astype(str).str.strip().replace("", "[Missing email]")
                                     email_counts = email_data.groupby("email_for_analysis")["_transaction_key"].nunique().sort_values(ascending=False).head(TOP_EMAILS_LIMIT).reset_index(name="declined_transactions")
@@ -647,9 +644,11 @@ elif module == "2. Acquiring Monitoring":
                                     email_counts["spike_dates"] = spike_dates_label
                                     email_results.append(email_counts)
 
-                                    # 3. Top 10 Triggered Rules Breakdown with Repository Names
+                                    # 3. Top 10 Rules
                                     rule_data = m_spike_declines[["_transaction_key", "_parsed_rules"]].explode("_parsed_rules").dropna()
                                     rule_data = rule_data[rule_data["_parsed_rules"].astype(str).str.strip().ne("")].drop_duplicates()
+
+                                    safe_id = re.sub(r"[^A-Za-z0-9_-]", "_", sel_id)
 
                                     if not rule_data.empty:
                                         rule_counts = rule_data.groupby("_parsed_rules")["_transaction_key"].nunique().sort_values(ascending=False).head(TOP_RULES_LIMIT).reset_index(name="declined_transactions_with_rule")
@@ -672,20 +671,49 @@ elif module == "2. Acquiring Monitoring":
                                         img_buf = io.BytesIO()
                                         plt.savefig(img_buf, format="png", dpi=150)
                                         plt.close(fig)
-                                        
-                                        zip_file.writestr(f"merchant_{sel_id}_top_rules.png", img_buf.getvalue())
+                                        zip_file.writestr(f"merchant_{safe_id}_top_rules.png", img_buf.getvalue())
+
+                                    # 4. Generate Card Country vs IP Country Heatmap for ZIP Export
+                                    if card_col and ip_col and card_col in m_spike_declines.columns and ip_col in m_spike_declines.columns:
+                                        ct = pd.crosstab(
+                                            m_spike_declines[card_col].replace("", np.nan).fillna("Unknown"),
+                                            m_spike_declines[ip_col].replace("", np.nan).fillna("Unknown")
+                                        )
+
+                                        if not ct.empty:
+                                            top_cards = m_spike_declines[card_col].replace("", np.nan).fillna("Unknown").value_counts().head(10).index
+                                            top_ips = m_spike_declines[ip_col].replace("", np.nan).fillna("Unknown").value_counts().head(10).index
+                                            ct_filtered = ct.loc[ct.index.isin(top_cards), ct.columns.isin(top_ips)]
+
+                                            if not ct_filtered.empty:
+                                                fig_hm, ax_hm = plt.subplots(figsize=(9, 7))
+                                                sns.heatmap(ct_filtered, annot=True, fmt="d", cmap="YlGnBu", cbar=True, ax=ax_hm)
+                                                ax_hm.set_title(f"Card Country vs IP Country Heatmap (Spike Declines)\nMerchant: {m_name} | ID: {sel_id}")
+                                                ax_hm.set_xlabel("IP Country")
+                                                ax_hm.set_ylabel("Card Country")
+                                                plt.tight_layout()
+
+                                                geo_buf = io.BytesIO()
+                                                plt.savefig(geo_buf, format="png", dpi=150)
+                                                plt.close(fig_hm)
+                                                zip_file.writestr(f"merchant_{safe_id}_geo_matrix.png", geo_buf.getvalue())
 
                             zip_buffer.seek(0)
 
-                            # Build DataFrames for display and export
                             deep_spike_df = pd.DataFrame(selected_spike_rows)
                             deep_coverage_df = pd.DataFrame(coverage_results)
                             deep_rules_df = pd.concat(rule_results, ignore_index=True) if rule_results else pd.DataFrame()
                             deep_emails_df = pd.concat(email_results, ignore_index=True) if email_results else pd.DataFrame()
 
-                            st.write("#### Deep Analysis Summary Preview")
-                            if not deep_rules_df.empty: 
+                            st.success("Deep Analysis Completed Successfully!")
+
+                            if not deep_rules_df.empty:
+                                st.write("#### 📊 Top Triggered Rules Preview")
                                 st.dataframe(deep_rules_df, use_container_width=True)
+
+                            if not deep_emails_df.empty:
+                                st.write("#### ✉️ Top Declined Payer Emails Preview")
+                                st.dataframe(deep_emails_df, use_container_width=True)
 
                             col_dl1, col_dl2 = st.columns(2)
                             with col_dl1:
@@ -701,16 +729,16 @@ elif module == "2. Acquiring Monitoring":
                                         deep_emails_df.to_excel(writer, sheet_name="Top Declined Emails", index=False)
 
                                 st.download_button(
-                                    label="📥 Download Deep Analysis Excel",
+                                    label="📥 Download Selected Deep Analysis Excel",
                                     data=output_deep.getvalue(),
-                                    file_name="SEON_Selected_Merchants_Deep_Analysis.xlsx",
+                                    file_name=DEEP_REPORT_FILE,
                                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                                 )
                             with col_dl2:
                                 st.download_button(
-                                    label="📦 Download Rule Charts ZIP",
+                                    label="📦 Download Rule & Geo Charts ZIP",
                                     data=zip_buffer.getvalue(),
-                                    file_name="Selected_Merchant_Rule_Charts.zip",
+                                    file_name=CHARTS_ZIP_FILE,
                                     mime="application/zip"
                                 )
                             
