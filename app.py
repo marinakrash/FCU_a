@@ -1405,125 +1405,239 @@ elif module == "3. Monthly Decline Report (Waterfall)":
 # MODULE 4: TOP-UP DECLINES MONITORING
 # ============================================================
 elif module == "4. Top-Up Declines Monitoring":
-    st.title("💰 Top-Up Wallet Declines & Route Analytics")
-    st.write("Monitoring wallet top-ups, decline reasons, payment methods, geographic routes, and peak spike days.")
+    st.title("💰 Top-Up Wallet Declines & Top Declined Users Analytics")
+    st.write("Monitor wallet top-up declines, track top failing users, analyze top decline reasons with loss amount highlighting, and apply global filters.")
     
-    up_file = st.file_uploader("Upload Top-Up Transaction Export (XLSX/CSV):", type=["xlsx", "csv"])
+    up_file = st.file_uploader("Upload Top-Up Transaction Export (XLSX/CSV):", type=["xlsx", "csv"], key="m4_upload")
     if up_file:
         df = load_data(up_file)
         
-        df['datetime_parsed'] = pd.to_datetime(df['transaction_date'], errors='coerce') if 'transaction_date' in df else pd.to_datetime(df['date'], errors='coerce')
-        df['date_only'] = df['datetime_parsed'].dt.date
+        # Mapping expected fields
+        DATE_COL = "created_date" if "created_date" in df.columns else ("transaction_date" if "transaction_date" in df.columns else "date")
+        USER_COL = "user_id" if "user_id" in df.columns else "user"
+        STATUS_COL = "status" if "status" in df.columns else "state"
+        AMOUNT_COL = "topup_amount" if "topup_amount" in df.columns else ("processing_amount" if "processing_amount" in df.columns else ("converted_amount" if "converted_amount" in df.columns else "transaction_amount_eur"))
+        VERIF_TYPE_COL = "verification_type" if "verification_type" in df.columns else ("user_type" if "user_type" in df.columns else "status_type")
+        PM_TYPE_COL = "payment_method_type" if "payment_method_type" in df.columns else "payment_method"
+        RESIDENCE_COL = "residence_country" if "residence_country" in df.columns else "user_country"
+        CARD_COUNTRY_COL = "card_issue_country" if "card_issue_country" in df.columns else "bin_country_code"
+        REJECT_REASON_COL = "reject_reason" if "reject_reason" in df.columns else ("response_information" if "response_information" in df.columns else ("applied_rule_ids" if "applied_rule_ids" in df.columns else "rule"))
+        TRANSFER_ID_COL = "transfer_id" if "transfer_id" in df.columns else "transaction_id"
+        MERCHANT_ID_COL = "merchant_id" if "merchant_id" in df.columns else "admin"
+
+        # Data cleaning and prep
+        df["_dt"] = pd.to_datetime(df[DATE_COL], errors="coerce", utc=True).dt.tz_convert(None)
+        df["_date"] = df["_dt"].dt.normalize()
+        df["_week"] = df["_dt"].dt.to_period("W").dt.start_time
         
-        df['state_clean'] = df['state'].astype(str).str.strip().str.capitalize()
-        df['is_failed'] = df['state_clean'] == 'Failed'
-        df['is_accepted'] = df['state_clean'] == 'Accepted'
+        df[STATUS_COL] = df[STATUS_COL].fillna("").astype(str).str.strip().str.lower()
+        df["_is_failed"] = df[STATUS_COL].isin(["failed", "decline", "declined", "error"])
         
-        resp_series = df['response_information'].astype(str).str.lower() if 'response_information' in df else pd.Series("", index=df.index)
-        df['is_seon_failed'] = df['is_failed'] & resp_series.str.contains('security reason', regex=False)
-        
-        if 'converted_amount' in df.columns:
-            df['amount_num'] = pd.to_numeric(df['converted_amount'].astype(str).str.replace(',', '.').str.replace(' ', ''), errors='coerce').fillna(0.0)
+        if AMOUNT_COL in df.columns:
+            df["_amount"] = pd.to_numeric(df[AMOUNT_COL].astype(str).str.replace(",", ".").str.replace(" ", ""), errors="coerce").fillna(0.0)
         else:
-            df['amount_num'] = 0.0
+            df["_amount"] = 0.0
 
-        total_tx = len(df)
-        accepted_tx = df['is_accepted'].sum()
-        failed_tx = df['is_failed'].sum()
-        seon_failed_tx = df['is_seon_failed'].sum()
-        failed_amount = df[df['is_failed']]['amount_num'].sum()
-        
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Total Top-Up Tx", f"{total_tx:,}")
-        c2.metric("Accepted Tx", f"{accepted_tx:,}")
-        c3.metric("Failed Tx", f"{failed_tx:,}")
-        c4.metric("Loss Amount (Failed)", f"{failed_amount:,.2f} EUR")
-        
-        st.subheader("📈 Overall Decline Rate vs. SEON Decline Rate Trend")
-        daily_stats = df.groupby('date_only').agg(
-            accepted=('is_accepted', 'sum'),
-            failed=('is_failed', 'sum'),
-            seon_failed=('is_seon_failed', 'sum')
-        ).reset_index()
-        
-        daily_stats['finished'] = daily_stats['accepted'] + daily_stats['failed']
-        daily_stats['overall_decline_rate'] = np.where(daily_stats['finished'] > 0, (daily_stats['failed'] / daily_stats['finished']) * 100, 0.0)
-        daily_stats['seon_decline_rate'] = np.where(daily_stats['finished'] > 0, (daily_stats['seon_failed'] / daily_stats['finished']) * 100, 0.0)
-        
-        fig_trend = go.Figure()
-        fig_trend.add_trace(go.Scatter(x=daily_stats['date_only'], y=daily_stats['overall_decline_rate'], name="Overall Decline Rate (%)", line=dict(color='#e74c3c', width=3)))
-        fig_trend.add_trace(go.Scatter(x=daily_stats['date_only'], y=daily_stats['seon_decline_rate'], name="SEON Decline Rate (%)", line=dict(color='#2980b9', width=2, dash='dash')))
-        st.plotly_chart(fig_trend, use_container_width=True)
-        
-        failed_df = df[df['is_failed']]
-        
-        if not failed_df.empty:
-            col1, col2 = st.columns(2)
-            with col1:
-                if 'user_country' in failed_df.columns:
-                    top_user_c = failed_df['user_country'].value_counts().head(8).reset_index()
-                    top_user_c.columns = ['user_country', 'count']
-                    fig1 = px.bar(top_user_c, x="count", y="user_country", orientation="h", title="Top User Countries (Declines)")
-                    st.plotly_chart(fig1, use_container_width=True)
-            with col2:
-                if 'card_country' in failed_df.columns:
-                    top_card_c = failed_df['card_country'].value_counts().head(8).reset_index()
-                    top_card_c.columns = ['card_country', 'count']
-                    fig2 = px.bar(top_card_c, x="count", y="card_country", orientation="h", title="Top Card Issuer Countries (Declines)")
-                    st.plotly_chart(fig2, use_container_width=True)
+        # Filter Payment method type = Top-up if column exists
+        if PM_TYPE_COL in df.columns:
+            topup_mask = df[PM_TYPE_COL].fillna("").astype(str).str.lower().str.contains("top", na=False)
+            if topup_mask.any():
+                df = df[topup_mask].copy()
 
-            col3, col4 = st.columns(2)
-            with col3:
-                if 'user_country' in failed_df.columns and 'card_country' in failed_df.columns:
-                    spike_geo = failed_df.groupby(['user_country', 'card_country']).size().reset_index(name='Failed_Count').sort_values(by='Failed_Count', ascending=False).head(8)
-                    spike_geo['route'] = spike_geo['user_country'] + ' -> ' + spike_geo['card_country']
-                    fig_route = px.bar(spike_geo, x="Failed_Count", y="route", orientation="h", title="Top Routes (User -> Card Country)")
-                    st.plotly_chart(fig_route, use_container_width=True)
-            with col4:
-                pm_col = 'payment_method_name' if 'payment_method_name' in failed_df.columns else 'payment_method_title'
-                if pm_col in failed_df.columns:
-                    top_pm = failed_df[pm_col].value_counts().head(8).reset_index()
-                    top_pm.columns = ['method', 'count']
-                    fig_pm = px.bar(top_pm, x="count", y="method", orientation="h", title="Top Payment Methods (Declines)")
-                    st.plotly_chart(fig_pm, use_container_width=True)
+        # --- GLOBAL FILTERS ---
+        st.sidebar.subheader("🎛️ Top-Up Global Filters")
+        
+        # Date Filter
+        min_date, max_date = df["_date"].min(), df["_date"].max()
+        if pd.notna(min_date) and pd.notna(max_date):
+            date_range = st.sidebar.date_input("Date Range:", [min_date, max_date])
+            if len(date_range) == 2:
+                df = df[(df["_date"] >= pd.Timestamp(date_range[0])) & (df["_date"] <= pd.Timestamp(date_range[1]))]
 
-            st.markdown("---")
-            st.subheader("🚨 Peak Spike Day Drill-Down Analytics")
-            spike_daily = failed_df.groupby('date_only').size().reset_index(name='failed_count')
-            peak_spike = spike_daily.sort_values(by=['failed_count', 'date_only'], ascending=[False, False]).iloc[0]
-            spike_date = peak_spike['date_only']
-            spike_count = peak_spike['failed_count']
+        # Verification Type Filter
+        if VERIF_TYPE_COL in df.columns:
+            verif_options = ["ALL"] + sorted(df[VERIF_TYPE_COL].dropna().astype(str).unique().tolist())
+            sel_verif = st.sidebar.selectbox("Verification Type:", verif_options)
+            if sel_verif != "ALL":
+                df = df[df[VERIF_TYPE_COL].astype(str) == sel_verif]
+
+        # Residence Country Filter
+        if RESIDENCE_COL in df.columns:
+            res_options = ["ALL"] + sorted(df[RESIDENCE_COL].dropna().astype(str).unique().tolist())
+            sel_res = st.sidebar.selectbox("Residence Country:", res_options)
+            if sel_res != "ALL":
+                df = df[df[RESIDENCE_COL].astype(str) == sel_res]
+
+        # Time Grouping Selector
+        time_slot = st.selectbox("View Charts By Time Slot:", ["Day", "Week"], key="m4_time_slot")
+        time_col = "_date" if time_slot == "Day" else "_week"
+
+        # Key Metrics Summary
+        failed_df = df[df["_is_failed"]].copy()
+        
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Total Top-Up Tx", f"{len(df):,}")
+        m2.metric("Total Declined Tx", f"{len(failed_df):,}")
+        m3.metric("Total Declined Amount", f"{failed_df['_amount'].sum():,.2f} EUR")
+        m4.metric("Unique Failing Users", f"{failed_df[USER_COL].nunique():,}" if USER_COL in failed_df.columns else "N/A")
+
+        st.markdown("---")
+        
+        # --- TOP 10 USERS VISUALIZATIONS ---
+        if not failed_df.empty and USER_COL in failed_df.columns:
+            col_chart1, col_chart2 = st.columns(2)
             
-            st.error(f"Peak Spike Date Detected: **{spike_date}** | Total Declines on Spike: **{spike_count:,}**")
-            
-            spike_df = failed_df[failed_df['date_only'] == spike_date]
-            
-            p1, p2, p3 = st.columns(3)
-            with p1:
-                if 'user_country' in spike_df.columns:
-                    uc_spike = spike_df['user_country'].value_counts().head(5).reset_index()
-                    fig_p1 = px.pie(uc_spike, values="count", names="user_country", title=f"User Country on Spike ({spike_date})")
-                    st.plotly_chart(fig_p1, use_container_width=True)
-            with p2:
-                if 'card_country' in spike_df.columns:
-                    cc_spike = spike_df['card_country'].value_counts().head(5).reset_index()
-                    fig_p2 = px.pie(cc_spike, values="count", names="card_country", title=f"Card Country on Spike ({spike_date})")
-                    st.plotly_chart(fig_p2, use_container_width=True)
-            with p3:
-                pm_col_title = 'payment_method_title' if 'payment_method_title' in spike_df.columns else 'payment_method_name'
-                if pm_col_title in spike_df.columns:
-                    pm_spike = spike_df[pm_col_title].value_counts().head(5).reset_index()
-                    fig_p3 = px.pie(pm_spike, values="count", names=pm_col_title, title=f"Payment Method on Spike ({spike_date})")
-                    st.plotly_chart(fig_p3, use_container_width=True)
+            with col_chart1:
+                st.subheader("3️⃣ Top 10 Users by Declined Amount")
+                top_amount_users = (
+                    failed_df.groupby([USER_COL, time_col])["_amount"]
+                    .sum()
+                    .reset_index()
+                )
+                top_user_ids_amt = (
+                    failed_df.groupby(USER_COL)["_amount"]
+                    .sum()
+                    .nlargest(10)
+                    .index
+                )
+                filtered_top_amt = top_amount_users[top_amount_users[USER_COL].isin(top_user_ids_amt)]
+                
+                fig_amt = px.bar(
+                    filtered_top_amt,
+                    x="_amount",
+                    y=USER_COL,
+                    color=time_col,
+                    orientation="h",
+                    title=f"Top 10 Users by Total Declined Amount ({time_slot} Slot)",
+                    labels={"_amount": "Total Declined Amount (EUR)", USER_COL: "User ID"}
+                )
+                fig_amt.update_layout(yaxis={"categoryorder": "total ascending"})
+                st.plotly_chart(fig_amt, use_container_width=True)
 
-        output_topup = io.BytesIO()
-        with pd.ExcelWriter(output_topup, engine="xlsxwriter") as writer:
-            daily_stats.to_excel(writer, sheet_name="Daily Trends", index=False)
-            if 'spike_geo' in locals():
-                spike_geo.to_excel(writer, sheet_name="Top Geo Routes", index=False)
-        st.download_button(
-            label="📥 Download Top-Up Monitoring Analytics Report (Excel)",
-            data=output_topup.getvalue(),
-            file_name="TopUp_Monitoring_Analytics_Report.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
+            with col_chart2:
+                st.subheader("4️⃣ Top 10 Users by Number of Declines")
+                top_count_users = (
+                    failed_df.groupby([USER_COL, time_col])
+                    .size()
+                    .reset_index(name="decline_count")
+                )
+                top_user_ids_cnt = (
+                    failed_df.groupby(USER_COL)
+                    .size()
+                    .nlargest(10)
+                    .index
+                )
+                filtered_top_cnt = top_count_users[top_count_users[USER_COL].isin(top_user_ids_cnt)]
+                
+                fig_cnt = px.bar(
+                    filtered_top_cnt,
+                    x="decline_count",
+                    y=USER_COL,
+                    color=time_col,
+                    orientation="h",
+                    title=f"Top 10 Users by Number of Declines ({time_slot} Slot)",
+                    labels={"decline_count": "Number of Declines", USER_COL: "User ID"}
+                )
+                fig_cnt.update_layout(yaxis={"categoryorder": "total ascending"})
+                st.plotly_chart(fig_cnt, use_container_width=True)
+
+        # --- TOP 5 DECLINE REASONS WITH AMOUNT COLOR HIGHLIGHTING ---
+        st.markdown("---")
+        st.subheader("🚨 Top 5 Decline Reasons (Highlighted by Total Amount Loss)")
+        
+        if not failed_df.empty and REJECT_REASON_COL in failed_df.columns:
+            reasons_summary = (
+                failed_df.groupby(REJECT_REASON_COL)
+                .agg(
+                    declined_count=("status", "size"),
+                    total_amount=("_amount", "sum")
+                )
+                .reset_index()
+                .sort_values("declined_count", ascending=False)
+            )
+            
+            reasons_summary["reason_label"] = reasons_summary[REJECT_REASON_COL].apply(get_rule_name)
+            top5_reasons_df = reasons_summary.head(5).copy()
+            
+            fig_reasons = px.bar(
+                top5_reasons_df,
+                x="declined_count",
+                y="reason_label",
+                color="total_amount",
+                color_continuous_scale="Reds",
+                orientation="h",
+                title="Top 5 Decline Reasons (Bar Color Represents Amount Loss in EUR)",
+                labels={
+                    "declined_count": "Number of Declines",
+                    "reason_label": "Decline Reason / Rule",
+                    "total_amount": "Total Amount Loss (EUR)"
+                }
+            )
+            fig_reasons.update_layout(yaxis={"categoryorder": "total ascending"})
+            st.plotly_chart(fig_reasons, use_container_width=True)
+            
+            # --- DATE TREND FILTER FOR DECLINE REASONS ---
+            st.subheader("📅 Decline Reasons Daily Trend Analysis")
+            all_reasons = top5_reasons_df["reason_label"].tolist()
+            selected_reasons = st.multiselect(
+                "Select Decline Reason(s) to View Daily Trend:",
+                options=reasons_summary["reason_label"].tolist(),
+                default=all_reasons[:2] if all_reasons else []
+            )
+            
+            if selected_reasons:
+                failed_df["_reason_clean"] = failed_df[REJECT_REASON_COL].apply(get_rule_name)
+                trend_reasons_df = (
+                    failed_df[failed_df["_reason_clean"].isin(selected_reasons)]
+                    .groupby(["_date", "_reason_clean"])
+                    .agg(
+                        daily_count=("status", "size"),
+                        daily_amount=("_amount", "sum")
+                    )
+                    .reset_index()
+                )
+                
+                fig_reason_trend = px.line(
+                    trend_reasons_df,
+                    x="_date",
+                    y="daily_count",
+                    color="_reason_clean",
+                    markers=True,
+                    title="Daily Trend of Selected Decline Reasons",
+                    labels={"_date": "Date", "daily_count": "Declines Count", "_reason_clean": "Reason"}
+                )
+                st.plotly_chart(fig_reason_trend, use_container_width=True)
+        else:
+            st.info("No reject reason data available to generate Top 5 Decline Reasons.")
+
+        # --- EXPORT TABLE & METRICS ---
+        st.markdown("---")
+        st.subheader("📄 Top-Up Declined Transactions Detail Table")
+        
+        export_cols = [
+            c for c in [
+                MERCHANT_ID_COL, USER_COL, VERIF_TYPE_COL, PM_TYPE_COL, TRANSFER_ID_COL,
+                DATE_COL, AMOUNT_COL, STATUS_COL, REJECT_REASON_COL, RESIDENCE_COL, CARD_COUNTRY_COL
+            ] if c in df.columns
+        ]
+        
+        export_df = failed_df[export_cols].copy() if not failed_df.empty else pd.DataFrame()
+        st.dataframe(export_df, use_container_width=True)
+
+        if not export_df.empty:
+            out_topup = io.BytesIO()
+            with pd.ExcelWriter(out_topup, engine="xlsxwriter") as writer:
+                export_df.to_excel(writer, sheet_name="Top-Up Declines", index=False)
+                if 'top5_reasons_df' in locals():
+                    top5_reasons_df.to_excel(writer, sheet_name="Top 5 Reasons", index=False)
+                if 'filtered_top_amt' in locals():
+                    filtered_top_amt.to_excel(writer, sheet_name="Top Users by Amount", index=False)
+                if 'filtered_top_cnt' in locals():
+                    filtered_top_cnt.to_excel(writer, sheet_name="Top Users by Count", index=False)
+
+            st.download_button(
+                label="📥 Export Top-Up Analytics Report (Excel)",
+                data=out_topup.getvalue(),
+                file_name="TopUp_Declined_Analytics_Report.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
