@@ -325,8 +325,8 @@ if module == "1. Case & Alert Monitoring":
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
 
-    elif sub_module == "Daily Case Monitoring Dashboard":
-        st.title("📋 Daily Case Monitoring Dashboard")
+    elif sub_module == "Case Monitoring Dashboard":
+        st.title("📋 Case Monitoring Dashboard")
         up_file = st.file_uploader("Upload Case File (CSV/XLSX):", type=["csv", "xlsx"])
         if up_file:
             df = load_data(up_file)
@@ -1130,8 +1130,8 @@ elif module == "2. Acquiring Monitoring":
 # ============================================================
 # MODULE 3: MONTHLY TOP-UP DECLINE REPORT
 # ============================================================
-elif module == "3. Monthly Decline Report (Waterfall)":
-    st.title("📊 Monthly Decline Waterfall & Metabase Volume")
+elif module == "3. Monthly Decline Report":
+    st.title("📊 Monthly Decline Waterfall")
     st.write("Complete monthly analytics pipeline matching the exact reference Google Colab logic.")
     
     # Select Month & Year
@@ -1405,7 +1405,7 @@ elif module == "3. Monthly Decline Report (Waterfall)":
 # MODULE 4: TOP-UP DECLINES MONITORING
 # ============================================================
 elif module == "4. Top-Up Declines Monitoring":
-    st.title("💰 Top-Up Wallet Declines & Route Analytics")
+    st.title("💰 Top-Up Wallet Declines ")
     st.write("Monitoring wallet top-ups, decline reasons, payment methods, geographic routes, top failing users, and peak spike days.")
     
     up_file = st.file_uploader("Upload Top-Up Transaction Export (XLSX/CSV):", type=["xlsx", "csv"], key="m4_upload")
