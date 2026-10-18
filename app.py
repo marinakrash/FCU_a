@@ -438,6 +438,7 @@ elif module == "2. Acquiring Monitoring":
                         candidates_ip = [c for c in df.columns if c.lower() in ["ip_country", "ipcountry"]]
                         ip_col = candidates_ip[0] if candidates_ip else None
 
+                    # Clean and normalize input data
                     df_clean = df.copy()
                     df_clean["_date_day"] = pd.to_datetime(df_clean[DATE_COLUMN].astype(str).str[:10], errors="coerce").dt.normalize()
                     df_clean[STATE_COLUMN] = df_clean[STATE_COLUMN].fillna("").astype(str).str.strip().str.upper()
@@ -464,6 +465,7 @@ elif module == "2. Acquiring Monitoring":
                         st.error("Insufficient historical or monitoring data to compute baseline.")
                         st.stop()
 
+                    # Calculate Baseline metrics per merchant
                     baseline_stats = baseline_df.groupby(MERCHANT_COLUMN).agg(
                         baseline_transactions=("_transaction_key", "nunique"),
                         baseline_declines=(STATE_COLUMN, lambda s: (s == DECLINE_STATE).sum()),
@@ -488,6 +490,7 @@ elif module == "2. Acquiring Monitoring":
                         how="left"
                     )
 
+                    # Identify spike days exceeding threshold and baseline
                     spikes = daily_stats[
                         (daily_stats["total_transactions"] >= MIN_SPIKE_TRANSACTIONS) &
                         (daily_stats["decline_rate"] > DECLINE_THRESHOLD) &
@@ -507,6 +510,7 @@ elif module == "2. Acquiring Monitoring":
                     spikes["relative_increase_pct"] = spikes["relative_increase"] * 100
                     spikes["spike_date"] = spikes["_date_day"]
 
+                    # Rank Top 10 Merchants by maximum relative increase
                     rank_rows = []
                     for merchant_id, merchant_spikes in spikes.groupby(MERCHANT_COLUMN):
                         merchant_spikes = merchant_spikes.sort_values(["relative_increase", "increase_pp", "decline_rate"], ascending=False)
@@ -536,9 +540,19 @@ elif module == "2. Acquiring Monitoring":
                     ).head(TOP_MERCHANTS_LIMIT).reset_index(drop=True)
 
                     top_merchants.insert(0, "rank", range(1, len(top_merchants) + 1))
+                    
+                    # Filter spikes to match only Top 10 Merchants
                     top_merchant_ids = set(top_merchants[MERCHANT_COLUMN].astype(str))
                     top_spikes = spikes[spikes[MERCHANT_COLUMN].astype(str).isin(top_merchant_ids)].copy()
 
+                    # Merge rank and merchant_name into top_spikes to prevent KeyError
+                    top_spikes = top_spikes.merge(
+                        top_merchants[["rank", MERCHANT_COLUMN, MERCHANT_NAME_COLUMN]],
+                        on=MERCHANT_COLUMN,
+                        how="left"
+                    )
+
+                    # Store state to preserve UI across interactions
                     st.session_state["m21_processed"] = True
                     st.session_state["m21_df_clean"] = df_clean
                     st.session_state["m21_top_merchants"] = top_merchants
@@ -560,6 +574,7 @@ elif module == "2. Acquiring Monitoring":
             top_merchants_export["baseline_decline_rate"] *= 100
             top_merchants_export["max_spike_decline_rate"] *= 100
 
+            # Export spike dates with guaranteed existing columns
             spike_dates_export = top_spikes[[
                 "rank", MERCHANT_COLUMN, MERCHANT_NAME_COLUMN, "spike_date",
                 "total_transactions", "declined_transactions", "decline_rate",
