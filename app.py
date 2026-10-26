@@ -266,8 +266,10 @@ if module == "1. Case & Alert Monitoring":
             else:
                 if ANALYZED_ASSIGNEES:
                     df = df[df["alert_assignee"].astype(str).str.strip().isin(ANALYZED_ASSIGNEES)].copy()
-                
-                df["alert_created_at"] = pd.to_datetime(df["alert_created_at"], errors="coerce")
+
+                df["alert_created_at"] = pd.to_datetime(
+                df["alert_created_at"], errors="coerce", utc=True
+                )
                 df = df.dropna(subset=["alert_created_at"]).copy()
                 df["alert_date"] = df["alert_created_at"].dt.date
                 
