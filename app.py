@@ -252,7 +252,7 @@ st.sidebar.markdown("---")
 # MODULE 1: CASE & ALERT MONITORING
 # ============================================================
 if module == "1. Case & Alert Monitoring":
-    sub_module = st.sidebar.radio("Sub-module:", ["Alert Analytics Dashboard", "Daily Case Monitoring Dashboard"])
+    sub_module = st.sidebar.radio("Sub-module:", ["Alert Analytics Dashboard", "Case Monitoring Dashboard"])
     
     if sub_module == "Alert Analytics Dashboard":
         st.title("🚨 Alert Analytics Dashboard")
